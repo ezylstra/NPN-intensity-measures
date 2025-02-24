@@ -2,3 +2,7 @@
 .Rhistory
 .RData
 .Ruserdata
+
+# Original NPN data downloads
+npn-data/*
+!npn-data/.gitkeep

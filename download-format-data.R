@@ -1,6 +1,6 @@
 # Exploring intensity data from sites that have collected it consistently
 # ER Zylstra
-# 25 Feb 2025
+# 26 Feb 2025
 
 library(dplyr)
 library(stringr)
@@ -55,7 +55,30 @@ for (site_id in site_ids) {
   }  
 } 
 
-#- Download info on phenophases and intensities -------------------------------#
+# Download status-intensity data for one site ---------------------------------#
+
+site_id <- 2
+si_file <- paste0("npn-data/si-site", site_id, "-", 
+                  min(yrs), "-", max(yrs), ".csv")
+
+si <- read.csv(si_file) %>%
+  # Create yr column
+  mutate(yr = year(observation_date)) %>%
+  # Convert html coding of ">" to symbol
+  mutate(phenophase_description = str_replace_all(phenophase_description,
+                                                  "&gt;", ">")) %>%
+  # Create phenophase_descrip that's the same as phenophase_description except 
+  # all parenthetical references to taxonomic groups or locations are removed
+  mutate(phenophase_descrip = str_replace(phenophase_description,
+                                          " \\s*\\([^\\)]+\\)", ""))
+
+# There are a lot of phenophases that weren't used after 2010 (I think they were
+# replaced with other phenophases). Filtering data to include only observations 
+# from 2011-2024
+si <- si %>% 
+  filter(yr > 2010)
+
+# Download info on phenophases and intensities --------------------------------#
 
 # Phenophase classes
 phc <- npn_pheno_classes() %>% 
@@ -66,94 +89,184 @@ phc <- npn_pheno_classes() %>%
   filter(class_id %in% 1:13) %>%
   data.frame()
 
+# Phenophases
 ph <- npn_phenophases() %>% 
   select(-color) %>%
+  # Remove trailing whitespaces in the phenophase_name column
+  mutate(phenophase_name = str_trim(phenophase_name)) %>%
   rename(class_id = pheno_class_id,
          category = phenophase_category) %>% 
   filter(class_id %in% 1:13) %>%
-  arrange(class_id, phenophase_id) %>%
   data.frame() %>%
-  left_join(select(phc, class_id, class_name), by = "class_id")
+  # Merge with phenophase class information
+  left_join(select(phc, class_id, class_name), by = "class_id") %>%
+  arrange(class_id, phenophase_id)
 
+# Summarize phenophases/classes in SI dataset
+si_ph <- si %>%
+  group_by(phenophase_id, phenophase_description, phenophase_descrip) %>%
+  summarize(nobs = n(),
+            nspp = n_distinct(common_name),
+            yr_first = min(yr),
+            yr_last = max(yr),
+            .groups = "keep") %>%
+  data.frame()
+si_ph <- si_ph %>%
+  left_join(ph, by = "phenophase_id")
+# check:
+# all.equal(si_ph$phenophase_descrip, si_ph$phenophase_name)
 
-intensity_file <- "npn-data/intensities.csv"
+# View phenophases and phenophase classes in SI dataset
+si_ph %>% arrange(class_id, yr_last, phenophase_id)
 
-  # Extract list of intensity categories in NPN database
-  ia_orig <- npn_abundance_categories() 
-    # Returns tibble with category ids, each with a dataframe that lists the value
-    # ids and value names (which is what appears in intensity_value column in a
-    # status-intensity dataset)
+# Extract list of intensity categories in NPN database
+ia_orig <- npn_abundance_categories() 
+  # Returns tibble with category ids, each with a dataframe that lists the value
+  # ids and value names (which is what appears in intensity_value column in a
+  # status-intensity dataset)
   
-  # Remove any blank entries 
-  ia_orig <- ia_orig %>%
-    filter(!(is.na(category_name) | category_name == ""))
+# Remove any blank entries 
+ia_orig <- ia_orig %>%
+  filter(!(is.na(category_name) | category_name == ""))
   
-  # Create a 2-dimensional dataframe that contains all the data
-  cat_ids <- select(ia_orig, category_id, category_name) %>% data.frame()
-  cat_values <- ia_orig$category_values
-  cat_values <- mapply(cbind, cat_values, "category_id" = cat_ids$category_id, 
-                       SIMPLIFY = FALSE)
-  cat_values <- mapply(cbind, cat_values, "category_name" = cat_ids$category_name, 
-                       SIMPLIFY = FALSE)
-  ia_orig <- bind_rows(cat_values) %>%
-    select(category_id, category_name, value_id, value_name, value_description)
+# Create a 2-dimensional dataframe that contains all the data
+cat_ids <- select(ia_orig, category_id, category_name) %>% data.frame()
+cat_values <- ia_orig$category_values
+cat_values <- mapply(cbind, cat_values, "category_id" = cat_ids$category_id, 
+                     SIMPLIFY = FALSE)
+cat_values <- mapply(cbind, cat_values, "category_name" = cat_ids$category_name, 
+                     SIMPLIFY = FALSE)
+ia_orig <- bind_rows(cat_values) %>%
+  select(category_id, category_name, value_id, value_name, value_description)
+
+# NOTE: categories 13 and 41 (Leaf size, in %) seem to be identical ############
   
-  # NOTE: categories 13 and 41 (Leaf size, in %) seem to identical #############
-  
-  # Identify whether values are a number/count, percent, or if they're qualitative. 
-  # If not qualitative, extract bounding values to calculate an appoximate
-  # midpoint.
-  ia <- ia_orig %>%
-    select(-value_description) %>%
-    mutate(value1 = NA,
-           value2 = NA,
-           type = case_when(
-             str_detect(value_name, "%") ~ "percent",
-             str_detect(value_name, "[0-9]") ~ "number",
-             .default = "qualitative"
-           ))
-  val12 <- which(colnames(ia) %in% c("value1", "value2"))
-  for (i in 1:nrow(ia)) {
-    if (str_detect(ia$value_name[i], " to ")) {
-      ia[i, val12] <- str_split_fixed(ia$value_name[i], " to ", 2)
-      ia[i, val12] <- as.numeric(str_remove(ia[i, val12], ","))
-    } else if (str_detect(ia$value_name[i], "-")) {
-      ia[i, val12] <- str_split_fixed(ia$value_name[i], "-", 2)
-      ia[i, val12[2]] <- str_remove(ia[i, val12[2]], "%")
-    } else if (str_detect(ia$value_name[i], "% or more")) {
-      ia[i, val12] <- str_remove(ia$value_name[i], "% or more")
-    } else if (str_detect(ia$value_name[i], "Less than ")) {
-      ia[i, val12[1]] <- 0
-      ia[i, val12[2]] <- str_remove(ia$value_name[i], "Less than ")
-      ia[i, val12[2]] <- str_remove(ia[i, val12[2]], "%")
-    } else if (str_detect(ia$value_name[i], "More than ")) {
-      ia[i, val12] <- str_remove(ia$value_name[i], "More than ")
-      ia[i, val12[1]] <- as.numeric(str_remove(ia[i, val12[1]], ",")) + 1
-      ia[i, val12[2]] <- as.numeric(str_remove(ia[i, val12[2]], ",")) + 1
-    }
+# Identify whether values are a number/count, percent, or if they're qualitative. 
+# If not qualitative, extract bounding values to calculate an appoximate
+# midpoint.
+ia <- ia_orig %>%
+  select(-value_description) %>%
+  mutate(value1 = NA,
+         value2 = NA,
+         type = case_when(
+           str_detect(value_name, "%") ~ "percent",
+           str_detect(value_name, "[0-9]") ~ "number",
+           .default = "qualitative"
+         ))
+val12 <- which(colnames(ia) %in% c("value1", "value2"))
+for (i in 1:nrow(ia)) {
+  if (str_detect(ia$value_name[i], " to ")) {
+    ia[i, val12] <- str_split_fixed(ia$value_name[i], " to ", 2)
+    ia[i, val12] <- as.numeric(str_remove(ia[i, val12], ","))
+  } else if (str_detect(ia$value_name[i], "-")) {
+    ia[i, val12] <- str_split_fixed(ia$value_name[i], "-", 2)
+    ia[i, val12[2]] <- str_remove(ia[i, val12[2]], "%")
+  } else if (str_detect(ia$value_name[i], "% or more")) {
+    ia[i, val12] <- str_remove(ia$value_name[i], "% or more")
+  } else if (str_detect(ia$value_name[i], "Less than ")) {
+    ia[i, val12[1]] <- 0
+    ia[i, val12[2]] <- str_remove(ia$value_name[i], "Less than ")
+    ia[i, val12[2]] <- str_remove(ia[i, val12[2]], "%")
+  } else if (str_detect(ia$value_name[i], "More than ")) {
+    ia[i, val12] <- str_remove(ia$value_name[i], "More than ")
+    ia[i, val12[1]] <- as.numeric(str_remove(ia[i, val12[1]], ",")) + 1
+    ia[i, val12[2]] <- as.numeric(str_remove(ia[i, val12[2]], ",")) + 1
   }
-  ia <- ia %>%
-    mutate_at(c("value1", "value2"), as.numeric)
+}
+ia <- ia %>%
+  mutate_at(c("value1", "value2"), as.numeric)
+
+# Assigning a middle-ish value for each range (For count ranges, keeping it to 
+# nice numbers like 5, 50, 500, and 5000)
+ia <- ia %>%
+  mutate(mag = nchar(value1) - 1) %>%
+  mutate(value = case_when(
+    value1 == value2 ~ round(value1),
+    type == "number" & value1 == 0 ~ 1,
+    type == "number" & value1 != 0 ~ 
+      plyr::round_any(rowMeans(across(value1:value2)), 5 * (10 ^ mag)),
+    type == "percent" ~ round(rowMeans(across(value1:value2))),
+    .default = NA
+  )) %>%
+  select(-mag)
+
+#########################
+# Some of these peak intensity categories are confusing (e.g., cats 31-34)
+# Is there an easy way to match up phenophases with intensity categories?
+# Maybe not given that the can be different intensity categories for each
+# species-phenophase combination....Obviously, a lookup table has to exist
+# somewhere so an observer is given the correct intensity values to choose from
+# but I'm not sure it's available via the API. 
   
-  # Assigning a middle-ish value for each range (For count ranges, keeping it to 
-  # nice numbers like 5, 50, 500, and 5000)
-  ia <- ia %>%
-    mutate(mag = nchar(value1) - 1) %>%
-    mutate(value = case_when(
-      value1 == value2 ~ round(value1),
-      type == "number" & value1 == 0 ~ 1,
-      type == "number" & value1 != 0 ~ 
-        plyr::round_any(rowMeans(across(value1:value2)), 5 * (10 ^ mag)),
-      type == "percent" ~ round(rowMeans(across(value1:value2))),
-      .default = NA
-    )) %>%
-    select(-mag)
-  
-  # Some of these peak intensity categories are confusing (e.g., cats 31-34)
-  # Is there an easy way to match up phenophases with intensity categories?
-  
+# Summarize intensity categories in SI dataset
+si_phi <- si %>%
+  filter(intensity_category_id != -9999) %>%
+  group_by(phenophase_id, phenophase_description, phenophase_descrip,
+           intensity_category_id) %>%
+  summarize(nobs = n(),
+            nspp = n_distinct(common_name),
+            nlevels = n_distinct(intensity_value[intensity_value != "-9999"]),
+            yr_first = min(yr),
+            yr_last = max(yr),
+            .groups = "keep") %>%
+  data.frame()
+si_phi <- si_phi %>%
+  left_join(select(ph, phenophase_id, class_id, class_name), 
+            by = "phenophase_id")
+ia_cats <- ia %>%
+  arrange(category_id, value_id) %>%
+  rename(intensity_category_id = category_id,
+         intensity_name = category_name) %>%
+  group_by(intensity_category_id, intensity_name) %>%
+  summarize(intensty_type = type[1], .groups = "keep") 
+si_phi <- si_phi %>%
+  left_join(ia_cats, by = "intensity_category_id")
+
+si_phi %>%
+  select(-phenophase_descrip) %>%
+  arrange(class_id, phenophase_id, yr_last)
+# For this site, there are 46 combinations of phenophases and intensity
+# categories, but many of the intensity categories were replaced in 2011, 2012, 
+# or even 2015. 
+
+# Restrict SI dataset to more recent years when phenophases -------------------#
+# intensity categories have been consistent -----------------------------------#
+si <- si %>% filter(yr > 2015)
+
+# Summarize phenophase and intensity categories again
+si_phi <- si %>%
+  filter(intensity_category_id != -9999) %>%
+  group_by(phenophase_id, phenophase_description, intensity_category_id) %>%
+  summarize(nobs = n(),
+            nspp = n_distinct(common_name),
+            nlevels = n_distinct(intensity_value[intensity_value != "-9999"]),
+            yr_first = min(yr),
+            yr_last = max(yr),
+            .groups = "keep") %>%
+  left_join(select(ph, phenophase_id, class_id, class_name), 
+            by = "phenophase_id") %>%
+  left_join(ia_cats, by = "intensity_category_id") %>%
+  data.frame() %>%
+  arrange(class_id, phenophase_id, yr_last)
+si_phi
+
+# Most phenophases are only associated with a single intensity category. 
+# Exceptions have intensity categories with different max values (1000, 10000)
+  # phenophase 500 (Flowers and flower buds)
+  # phenophase 516 (Fruits present)
+  # phenophase 504 (Recent fruit or seed drop) 
+
+# Only one intensity category left is qualitative (51 = Pollen release), which
+# is associated with 2 phenophases: 502/503 (Pollen release (flowers/conifers))
+
+#TODO: move some of the code above to a separate script where I explore 
+# phenophases and intensity categories
 
 
+
+
+
+# Probably remove/update stuff below...
 # Explore data for one site ---------------------------------------------------#
 
 # Start with Ellen's site

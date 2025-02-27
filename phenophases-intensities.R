@@ -143,47 +143,49 @@ filter(ia_orig, grepl("peak", category_name))
 # phenophases and/or intensity categories that have been phased out (which might
 # be fine)
 
-# Commenting this out since I don't want to accidentally start a new download 
-# or overwrite the existing file
+# Commenting out much of the code below since I don't want to accidentally start 
+# a new download or overwrite the existing file (there are a lot of records and 
+# it takes a while!)
 
-# # Limit download to plants by finding relevant taxonomic orders first
-#   all_spp <- npn_species()
-#   plant_spp <- all_spp %>%
-#     filter(kingdom == "Plantae") %>%
-#     select(species_id, common_name, functional_type, class_id, class_name)
-#   plant_classes <- unique(plant_spp$class_id)
-# 
+# Limit download to plants by finding relevant taxonomic orders first
+  all_spp <- npn_species()
+  plant_spp <- all_spp %>%
+    filter(kingdom == "Plantae") %>%
+    select(species_id, common_name, functional_type, class_id, class_name)
+  plant_classes <- unique(plant_spp$class_id)
+  
+# Set year of interest
+  yr <- 2024
+
 # # Download status-intensity data (this takes a long time! millions of records)
 #   si_orig <- npn_download_status_data(
 #     request_source = "erinz",
-#     years = year(Sys.Date()) - 1,
+#     years = yr,
 #     class_ids = plant_classes,
 #     climate_data = FALSE,
-#     additional_fields = c("site_name",
-#                           "species_functional_type")
+#     additional_fields = c("species_functional_type")
 #   )
 # 
 # # Remove unnecessary columns 
 #   si_orig <- si_orig %>%
-#     select(-c(update_datetime, site_name, elevation_in_meters, genus, species,
+#     select(-c(update_datetime, elevation_in_meters, genus, species,
 #               kingdom, day_of_year, abundance_value))
 # 
 # # Don't need all the observations. Just want a table that provides combinations
-# # of species, phenophase, and intensity_category_id (when provided). 
+# # of species, phenophase, and intensity category (when specified). 
 #   si_combos <- si_orig %>%
 #     filter(intensity_category_id != -9999) %>%
 #     distinct(species_id, common_name, species_functional_type, phenophase_id,
 #              phenophase_description, intensity_category_id, intensity_value)
 # # Write this to file
 #   write.csv(si_combos,
-#             paste0("npn-data/si-plants-", year(Sys.Date()) - 1,
-#                    "-spp-ph-int-combos.csv"),
+#             paste0("npn-data/si-plants-", yr, "-spp-ph-int-combos.csv"),
 #             row.names = FALSE)
 
 # Load si data and combine with phenophase, intensity information -------------#
 
 # Read in the species-phenophase-intensity category combination file
-si_combos <- read.csv(paste0("npn-data/si-plants-", year(Sys.Date()) - 1, 
+si_combos <- read.csv(paste0("npn-data/si-plants-", yr, 
                              "-spp-ph-int-combos.csv"))
 
 # Check that each intensity category has multiple values (other than -9999)
@@ -210,8 +212,8 @@ ia_cats <- ia %>%
   summarize(nlevels = n(), .groups = "keep") %>%
   data.frame()
 
-# Create dataframe with unique combinations of phenophase, intensity categories
-# that were used in recent year of observations
+# Create dataframe with unique combinations of phenophase and intensity category
+# that were used in 2024
 ph_int <- si_combos %>%
   group_by(phenophase_id, phenophase_description, intensity_category_id) %>%
   summarize(n_spp = n_distinct(common_name), .groups = "keep") %>%
@@ -220,7 +222,18 @@ ph_int <- si_combos %>%
   left_join(ia_cats, by = "intensity_category_id") %>%
   data.frame() %>%
   arrange(class_id, phenophase_id)
-select(ph_int, -nlevels)
+
+# Write this to file
+# write.csv(ph_int,
+#           paste0("npn-data/phenophases-intensities-", yr, ".csv"),
+#           row.names = FALSE)
+
+# Write dataframe with intensity values/midpoints to file
+ia_yr <- ia %>%
+  filter(intensity_category_id %in% unique(ph_int$intensity_category_id))
+# write.csv(ia_yr,
+#           paste0("npn-data/intensity-values-", yr, ".csv"),
+#           row.names = FALSE)
 
 #########################
 # Few notes/questions on phenophase-intensity associations
@@ -243,5 +256,5 @@ select(ph_int, -nlevels)
   # category 51: Pollen release; phenophases 502, 503
 
 # Only one qualitative intensity category used: Pollen release.
-# None of the "peak" categories were used.
+# None of the "peak" intensity categories were used.
 #########################

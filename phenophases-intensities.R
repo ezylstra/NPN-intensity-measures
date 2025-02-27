@@ -240,8 +240,10 @@ ia_yr <- ia %>%
 
 select(ph_int, -nlevels)
 
-# No observations in two phenophase classes: 5 (Falling leaves or needles) and 
-# 9 (End of flowering)
+# Two phenophase classes are missing from these phenophase-intensity summaries: 
+# 5 (Falling leaves or needles) and 9 (End of flowering). 
+# I think this is because there are no intensity categories associated with 
+# phenophases in these classes. 
 
 # Most phenophases associated with a single intensity category. 
 # Exceptions have 2 intensity categories with different max values (1000, 10000)

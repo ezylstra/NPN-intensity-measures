@@ -1,11 +1,12 @@
 # Exploring intensity data from sites that have collected it consistently
 # ER Zylstra
-# 27 Feb 2025
+# 28 Feb 2025
 
 library(dplyr)
 library(stringr)
 library(lubridate)
 library(rnpn)
+library(ggplot2)
 
 rm(list = ls())
 
@@ -119,30 +120,182 @@ ivalues_missing <- ivalues %>%
          intensity_midpoint = NA) %>%
   relocate(intensity_type, .after = "intensity_value")
 ivalues <- rbind(ivalues, ivalues_missing)
+
+
 si <- si %>%
   select(-c(observation_id, observedby_person_id, site_name, latitude,
             longitude, elevation_in_meters, state, genus, species,
             phenophase_descrip)) %>%
-  left_join(select(ph_merge, phenophase_id, class_id, class_name), 
-            by = "phenophase_id") %>%
+  left_join(ph_merge, by = "phenophase_id") %>%
   left_join(ivalues, by = c("intensity_category_id", "intensity_value"))
+
+# Create a new column with intensity labels (factor)
+si <- si %>%
+  # Remove anything in parentheses in intensity name
+  mutate(intensity_label = str_replace(intensity_name, " \\s*\\([^\\)]+\\)", "")) %>%
+  # Remove the word " present" from intensity name
+  mutate(intensity_label = str_remove(intensity_label, " present")) %>%
+  # Remove the word "Potential" from intensity name
+  mutate(intensity_label = str_remove(intensity_label, "Potential ")) %>%
+  # Remove the word " percentage" from intensity name
+  mutate(intensity_label = str_remove(intensity_label, " percentage")) %>%
+  # Remove "Recent " from intensity name
+  mutate(intensity_label = str_remove(intensity_label, "Recent ")) %>%
+  # Replace " or " with "/" in intensity name
+  mutate(intensity_label = str_replace(intensity_label, " or ", "/")) %>%
+  # Add "No. " in front or "(%)" at the end
+  mutate(intensity_label = case_when(
+    intensity_type == "number" ~ paste0("No. ", str_to_lower(intensity_label)),
+    intensity_type == "percent" ~ paste0(str_to_sentence(intensity_label), " (%)"),
+    .default = intensity_label
+  )) %>%
+  arrange(class_id) %>%
+  mutate(intensity_label = factor(intensity_label, 
+                                  levels = unique(intensity_label)))
+
+leaf_classes <- 1:4
+flower_classes <- 6:8
+fruit_classes <- 10:13
 
 # Look at data for one species ------------------------------------------------#
 
 spp <- "sugar maple"
 
+# Notes based on activity curves (prop of individuals with yes) for sugar maple 
+# in NE US in 2022: 
+# Sugar maples flower before leafing out. 
+# Fruits appear mid-year but may not ripen until winter? (Not as sure about this)
+
 sispp <- filter(si, common_name == spp)
+count(sispp, individual_id) # 3 individuals
+
 sispp %>%
-  group_by(class_id, phenophase_description, intensity_name, intensity_type) %>%
+  group_by(class_id, phenophase_description, intensity_label) %>%
   summarize(nobs = n(),
             yr_first = first(yr),
             yr_last = last(yr),
+            # Number of observations in phenophase (yeses)
             n_inphase = sum(phenophase_status == 1),
+            # Number of observations with an intensity value
             n_intvalue = sum(intensity_value != "-9999"),
+            # Proportion of observations
             prop_inphase = round(n_inphase / nobs, 2),
             prop_intvalue = round(n_intvalue / n_inphase, 2),
             .groups = "keep") %>%
   data.frame()
 
+# Calculate the interval between observations of the same plant, phenophase
+sispp_obs <- sispp %>%
+  distinct(common_name, individual_id, phenophase_description, day_of_year, yr) %>%
+  arrange(individual_id, phenophase_description, yr, day_of_year) 
+sispp_obs$interval <- NA
+for (i in 2:nrow(sispp_obs)) {
+  sispp_obs$interval[i] <- ifelse(
+    sispp_obs$individual_id[i] == sispp_obs$individual_id[i - 1] &
+      sispp_obs$phenophase_description[i] == sispp_obs$phenophase_description[i - 1] &
+      sispp_obs$yr[i] == sispp_obs$yr[i - 1], 
+    sispp_obs$day_of_year[i] - sispp_obs$day_of_year[i - 1], 
+    NA
+  )
+}
 
+# NEXT UP:
+# Summarize amount and quality of information for each plant, phenophase, year
+# Number of observations
+# Mean interval between observations (or maybe largest gap?)
+# Any in phase (status == yes)?
+# Number of observations with intensity values when status == 1
+
+
+
+
+
+# Things to explore: ###########################################################
+# Status data for each phenophase: yes/no by year, individual (how much variation?)
+# Intensity data for each phenophase: Changes over time for an individual, by year
+# What are we gaining with intensity data? By comparing status and intensity value
+  # might get a more nuanced understanding fo phenology (eg, how quickly does 
+  # a tree go from no leaves to full canopy?)
+# Combining intensity values for flowers (#), open flowers (%) = # open flowers
+# Combining intensity values for fruits (#), ripe fruits (%) = # ripe fruits
+
+# Simplified dataframe for plotting
+sispp1 <- sispp %>%
+  select(common_name, individual_id, class_id, phenophase_description, 
+         yr, observation_date, day_of_year, phenophase_status, intensity_label,
+         intensity_midpoint) %>%
+  rename(id = individual_id, 
+         class = class_id, 
+         phenophase = phenophase_description,
+         obsdate = observation_date,
+         doy = day_of_year,
+         status = phenophase_status,
+         intensity = intensity_midpoint) %>%
+  mutate(obsdate = ymd(obsdate), 
+         id = as.factor(id)) %>%
+  # Change intensity values to 0 (from NA), when status = 0
+  mutate(intensity = ifelse(status == 0, 0, intensity)) %>%
+  # Remove phenophases in a given year if the status is always no
+  group_by(phenophase, yr) %>%
+  mutate(observed = ifelse(sum(status) > 0, 1, 0)) %>%
+  mutate(values = ifelse(sum(intensity) > 0, 1, 0)) %>%
+  ungroup() %>%
+  data.frame()
+
+# Plot intensity values for each phenophase, colored by plant -----------------#
+# Leaves
+ggplot(filter(sispp1, yr == 2021 & class %in% leaf_classes & values == 1)) +
+  geom_line(aes(x = doy, y = intensity, color = id)) +
+  geom_point(aes(x = doy, y = intensity, color = id)) +
+  facet_grid(intensity_label ~ ., scales = "free_y", 
+             labeller = label_wrap_gen(14)) + 
+  labs(title = paste0(str_to_sentence(spp), " - site ", site_id,
+                      " - 2021: Leaf phenophases"), 
+       x = "Day of year", y = "Estimate", color = "Plant ID") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        legend.position = "bottom")
+
+# Flowers
+ggplot(filter(sispp1, yr == 2021 & class %in% flower_classes & values == 1)) +
+  geom_line(aes(x = doy, y = intensity, color = id)) +
+  geom_point(aes(x = doy, y = intensity, color = id)) +
+  facet_grid(intensity_label ~ ., scales = "free_y", 
+             labeller = label_wrap_gen(14)) + 
+  labs(title = paste0(str_to_sentence(spp), " - site ", site_id,
+                      " - 2021: Flower phenophases"), 
+       x = "Day of year", y = "Estimate", color = "Plant ID") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        legend.position = "bottom")
+
+# Fruits
+ggplot(filter(sispp1, yr == 2021 & class %in% fruit_classes & values == 1)) +
+  geom_line(aes(x = doy, y = intensity, color = id)) +
+  geom_point(aes(x = doy, y = intensity, color = id)) +
+  facet_grid(intensity_label ~ ., scales = "free_y", 
+             labeller = label_wrap_gen(14)) + 
+  labs(title = paste0(str_to_sentence(spp), " - site ", site_id, 
+                      " - 2021: Fruit phenophases"), 
+       x = "Day of year", y = "Estimate", color = "Plant ID") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        legend.position = "bottom")
+
+# How much annual variation is there in intensity values, over years
+# (within a plant, aggregating across plants)
+ggplot(filter(sispp1, class == 3 & values == 1)) +
+  geom_line(aes(x = doy, y = intensity, color = factor(yr))) +
+  geom_point(aes(x = doy, y = intensity, color = factor(yr))) +
+  facet_grid(id ~ .) + 
+  labs(title = paste0(str_to_sentence(spp), " - site ", site_id, 
+                      ": Leaf canopy fullness (%)"), 
+       x = "Day of year", y = "Estimate", color = "Year") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        legend.position = "bottom")
+# Need to remove a year if there's large gaps between observations #######
+
+# Looks like there's more variation among individuals than years, which is
+# interesting.
 

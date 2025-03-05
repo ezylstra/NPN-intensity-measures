@@ -134,14 +134,16 @@ filter(ia_orig, grepl("peak", category_name))
   # Doesn't look like these were used in recent years 
 #########################
 
+# IMPORTANT NOTE: ##############################################################
+# Want to match up phenophases and intensity categories. Originally I did this
+# using status intensity data (downloaded all plant data in 2024!). However, I
+# later learned about the Secondary Phenophase Details table available in the 
+# API that lists all species-phenophase-abundance/intensity categories (they
+# call this the SSPI data). Import the SSPI data and compare at the bottom of 
+# this script. 
+################################################################################
+
 # Download status-intensity data ----------------------------------------------#
-
-# Want to match up phenophases and intensity categories, but I'm not sure how to
-# do this without using a status-intensity (si) dataset.
-
-# For now, will download recent si data, knowing that it won't include certain 
-# phenophases and/or intensity categories that have been phased out (which might
-# be fine)
 
 # Commenting out much of the code below since I don't want to accidentally start 
 # a new download or overwrite the existing file (there are a lot of records and 
@@ -260,3 +262,63 @@ select(ph_int, -nlevels)
 # Only one qualitative intensity category used: Pollen release.
 # None of the "peak" intensity categories were used.
 #########################
+
+# SSPI data (from API) --------------------------------------------------------#
+
+# Read in csv with species-phenophase-abundance/intensity category combinations
+# Got this (SSPI data) from the NPN API see:
+# OneDrive/NPN/IntensityMeasures/get-phenophase-intensity-pairs.R
+
+spi <- read.csv("npn-data/spps-phenophases-intensities.csv")
+
+head(select(spi, -additional_definition))
+head(ia)
+head(ia_cats)
+head(ph_int)
+
+spi <- spi %>%
+  rename(intensity_category_id = abundance_category)
+
+# Do all intensity categories in ia/ia_cats appear in SSPI data?
+spi_cats <- unique(spi$intensity_category_id)
+filter(ia_cats, !intensity_category_id %in% spi_cats)
+# No. Missing the following in the SSPI data: 
+# 18 (Young needle bundles present)
+# 21 (Initial growth of buds or shoots)
+# 22 (Initial growth of shoots)
+filter(ph_int, intensity_category_id %in% c(18, 21, 22))
+# These categories must have been phased out because they weren't used in 2024
+# But why not in the table from the API, that should include categories that 
+# have been deactivated?
+
+# Do all intensity categories in ph_int (2024 combinations of phenophases and 
+# intensity categories in status data) appear in SSPI data?
+filter(ph_int, !intensity_category_id %in% spi_cats)
+# Yes
+
+# Merge SSPI data with info on intensity categories I created before:
+spi2 <- spi %>%
+  # Get rid of categories that had been deactivated
+  filter(is.na(stopdate)) %>%
+  # Get rid of spp-phenophase combinations that don't have intensity category
+  filter(!is.na(intensity_category_id)) %>%
+  # Merge with intensity category info
+  left_join(ia_cats, by = "intensity_category_id")
+count(spi2, nlevels) 
+# Everything matches up - no intensity categories in SSPI data that I didn't
+# already have from rnpn downloads
+
+
+# If the following phenophases don't appear in current SSPI table, what have 
+# they been replaced with? (18 looks like it was replaced with a similar 
+# category and different max value)
+# 21 (Initial growth of buds or shoots)
+# 22 (Initial growth of shoots)
+
+# Look for the following phenophases in SSPI table:
+# 71 (Emergence above ground)
+# 482/492/508 (Initial growth)
+spi %>% 
+  filter(phenophase_id %in% c(71, 482, 492, 508)) %>% 
+  count(intensity_category_id)
+# No intensity categories associated with these phenophases (always NA)

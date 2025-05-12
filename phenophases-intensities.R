@@ -1,6 +1,6 @@
 # Exploring relationships between plant phenophases and intensity categories
 # ER Zylstra
-# 27 Feb 2025
+# 12 May 2025
 
 library(dplyr)
 library(stringr)
@@ -46,30 +46,14 @@ ph <- npn_phenophases() %>%
 
 # Download info on intensity categories ---------------------------------------#
 
-ia_orig <- npn_abundance_categories() 
-  # Returns tibble with category ids, each with a dataframe that lists the value
-  # ids and value names (which is what appears in intensity_value column in a
-  # status-intensity dataset)
-
-# Remove blank entries 
-ia_orig <- ia_orig %>%
-  filter(!(is.na(category_name) | category_name == ""))
-
-# Create a 2-dimensional dataframe that contains all the data
-cat_ids <- select(ia_orig, category_id, category_name) %>% data.frame()
-cat_values <- ia_orig$category_values
-cat_values <- mapply(cbind, cat_values, "category_id" = cat_ids$category_id, 
-                     SIMPLIFY = FALSE)
-cat_values <- mapply(cbind, cat_values, "category_name" = cat_ids$category_name, 
-                     SIMPLIFY = FALSE)
-ia_orig <- bind_rows(cat_values) %>%
-  select(category_id, category_name, value_id, value_name, value_description)
+ia_orig <- npn_abundance_categories() %>%
+  select(category_id, category_name, value_id, value_name) %>%
+  data.frame()
 
 # Create new dataframe, that identifies whether values are a number/count, 
 # percent, or if they're qualitative. If not qualitative, extract bounding 
 # values to calculate an appoximate midpoint.
 ia <- ia_orig %>%
-  select(-value_description) %>%
   mutate(value1 = NA,
          value2 = NA,
          intensity_type = case_when(

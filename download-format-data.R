@@ -121,7 +121,6 @@ ivalues_missing <- ivalues %>%
   relocate(intensity_type, .after = "intensity_value")
 ivalues <- rbind(ivalues, ivalues_missing)
 
-
 si <- si %>%
   select(-c(observation_id, observedby_person_id, site_name, latitude,
             longitude, elevation_in_meters, state, genus, species,
@@ -163,48 +162,88 @@ spp <- "sugar maple"
 
 # Notes based on activity curves (prop of individuals with yes) for sugar maple 
 # in NE US in 2022: 
-# Sugar maples flower before leafing out. 
-# Fruits appear mid-year but may not ripen until winter? (Not as sure about this)
+  # Sugar maples flower before leafing out. 
+  # Fruits appear mid-year but may not ripen until winter?
 
 sispp <- filter(si, common_name == spp)
 count(sispp, individual_id) # 3 individuals
 
+# Look at amount of observations in phase, with intensity values by phenophase
 sispp %>%
   group_by(class_id, phenophase_description, intensity_label) %>%
   summarize(nobs = n(),
             yr_first = first(yr),
             yr_last = last(yr),
-            # Number of observations in phenophase (yeses)
+            # Number of observations in phenophase
             n_inphase = sum(phenophase_status == 1),
             # Number of observations with an intensity value
             n_intvalue = sum(intensity_value != "-9999"),
-            # Proportion of observations
+            # Proportion of observations in phenophase
             prop_inphase = round(n_inphase / nobs, 2),
+            # Proportion of in-phase observations with intensity values
             prop_intvalue = round(n_intvalue / n_inphase, 2),
             .groups = "keep") %>%
   data.frame()
+# No observations of Pollen release
+
+# First check that there's only one observation of each plant-phenophase per day
+  # nrow(sispp)
+  # nrow(distinct(sispp, individual_id, phenophase_description, day_of_year, yr))
+# If these have the same number of rows, we're good
 
 # Calculate the interval between observations of the same plant, phenophase
-sispp_obs <- sispp %>%
-  distinct(common_name, individual_id, phenophase_description, day_of_year, yr) %>%
-  arrange(individual_id, phenophase_description, yr, day_of_year) 
-sispp_obs$interval <- NA
-for (i in 2:nrow(sispp_obs)) {
-  sispp_obs$interval[i] <- ifelse(
-    sispp_obs$individual_id[i] == sispp_obs$individual_id[i - 1] &
-      sispp_obs$phenophase_description[i] == sispp_obs$phenophase_description[i - 1] &
-      sispp_obs$yr[i] == sispp_obs$yr[i - 1], 
+sispp <- sispp %>%
+  arrange(individual_id, phenophase_description, yr, day_of_year)
+sispp$interval <- NA
+for (i in 2:nrow(sispp)) {
+  sispp$interval[i] <- ifelse(
+    sispp$individual_id[i] == sispp$individual_id[i - 1] &
+      sispp$phenophase_description[i] == sispp$phenophase_description[i - 1] &
+      sispp$yr[i] == sispp$yr[i - 1], 
     sispp_obs$day_of_year[i] - sispp_obs$day_of_year[i - 1], 
     NA
   )
 }
 
-# NEXT UP:
 # Summarize amount and quality of information for each plant, phenophase, year
-# Number of observations
-# Mean interval between observations (or maybe largest gap?)
-# Any in phase (status == yes)?
-# Number of observations with intensity values when status == 1
+pl_ph_yr <- sispp %>%
+  group_by(common_name, individual_id, phenophase_description, yr) %>%
+  summarize(nobs = n(),
+            first_obs = min(day_of_year),
+            last_obs = max(day_of_year),
+            mean_int = round(mean(interval, na.rm = TRUE), 2),
+            max_int = max(interval, na.rm = TRUE),
+            n_inphase = sum(phenophase_status),
+            n_intvalue = sum(intensity_value != "-9999"),
+            prop_inphase = round(n_inphase / nobs, 2),
+            prop_intvalue = round(n_intvalue / n_inphase, 2),
+            .groups = "keep") %>%
+  data.frame()
+
+# Remove any combinations with no observations in phase, no observations with
+# intensity values, or mean observation interval > 14 days
+pl_ph_yr <- pl_ph_yr %>%
+  mutate(remove = case_when(
+    n_inphase == 0 ~ 1,
+    n_intvalue == 0 ~ 1,
+    mean_int > 14 ~ 1,
+    .default = 0
+  ))
+
+
+
+# Less frequent monitoring in 2017, all other years similar
+sispp_obss %>%
+  group_by(yr) %>%
+  summarize(mean_int = round(mean(mean_int), 1))
+# Similar monitoring frequency for all pheonophases
+sispp_obss %>%
+  group_by(phenophase_description) %>%
+  summarize(mean_int = round(mean(mean_int), 1))
+
+# So for sugar maple, we'll eliminate observations of pollen release and
+# observations in 2017
+
 
 
 

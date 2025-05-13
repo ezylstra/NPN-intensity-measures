@@ -1,0 +1,171 @@
+"intensity_category_id","intensity_name","intensity_value_id","intensity_value_name","intensity_type","intensity_midpoint"
+38,"Plant greeness",25,"Less than 5%","percent",2
+38,"Plant greeness",26,"5-24%","percent",14
+38,"Plant greeness",27,"25-49%","percent",37
+38,"Plant greeness",28,"50-74%","percent",62
+38,"Plant greeness",29,"75-94%","percent",84
+38,"Plant greeness",30,"95% or more","percent",95
+39,"Breaking leaf buds (10000)",32,"Less than 3","number",1
+39,"Breaking leaf buds (10000)",33,"3 to 10","number",5
+39,"Breaking leaf buds (10000)",39,"11 to 100","number",50
+39,"Breaking leaf buds (10000)",40,"101 to 1,000","number",500
+39,"Breaking leaf buds (10000)",41,"1,001 to 10,000","number",5000
+39,"Breaking leaf buds (10000)",42,"More than 10,000","number",10001
+41,"Leaf size",31,"Less than 25%","percent",12
+41,"Leaf size",27,"25-49%","percent",37
+41,"Leaf size",28,"50-74%","percent",62
+41,"Leaf size",29,"75-94%","percent",84
+41,"Leaf size",30,"95% or more","percent",95
+43,"Young leaves present (10000)",32,"Less than 3","number",1
+43,"Young leaves present (10000)",33,"3 to 10","number",5
+43,"Young leaves present (10000)",39,"11 to 100","number",50
+43,"Young leaves present (10000)",40,"101 to 1,000","number",500
+43,"Young leaves present (10000)",41,"1,001 to 10,000","number",5000
+43,"Young leaves present (10000)",42,"More than 10,000","number",10001
+44,"Young needles present (10000)",32,"Less than 3","number",1
+44,"Young needles present (10000)",33,"3 to 10","number",5
+44,"Young needles present (10000)",39,"11 to 100","number",50
+44,"Young needles present (10000)",40,"101 to 1,000","number",500
+44,"Young needles present (10000)",41,"1,001 to 10,000","number",5000
+44,"Young needles present (10000)",42,"More than 10,000","number",10001
+48,"Flowers and flower buds (10000)",32,"Less than 3","number",1
+48,"Flowers and flower buds (10000)",33,"3 to 10","number",5
+48,"Flowers and flower buds (10000)",39,"11 to 100","number",50
+48,"Flowers and flower buds (10000)",40,"101 to 1,000","number",500
+48,"Flowers and flower buds (10000)",41,"1,001 to 10,000","number",5000
+48,"Flowers and flower buds (10000)",42,"More than 10,000","number",10001
+49,"Flowers and flower buds (1000)",32,"Less than 3","number",1
+49,"Flowers and flower buds (1000)",33,"3 to 10","number",5
+49,"Flowers and flower buds (1000)",39,"11 to 100","number",50
+49,"Flowers and flower buds (1000)",40,"101 to 1,000","number",500
+49,"Flowers and flower buds (1000)",43,"More than 1,000","number",1001
+50,"Open flowers percentage (individual)",25,"Less than 5%","percent",2
+50,"Open flowers percentage (individual)",26,"5-24%","percent",14
+50,"Open flowers percentage (individual)",27,"25-49%","percent",37
+50,"Open flowers percentage (individual)",28,"50-74%","percent",62
+50,"Open flowers percentage (individual)",29,"75-94%","percent",84
+50,"Open flowers percentage (individual)",30,"95% or more","percent",95
+51,"Pollen release",44,"Little","qualitative",NA
+51,"Pollen release",45,"Some","qualitative",NA
+51,"Pollen release",46,"Lots","qualitative",NA
+52,"Flower heads present (1000)",32,"Less than 3","number",1
+52,"Flower heads present (1000)",33,"3 to 10","number",5
+52,"Flower heads present (1000)",39,"11 to 100","number",50
+52,"Flower heads present (1000)",40,"101 to 1,000","number",500
+52,"Flower heads present (1000)",43,"More than 1,000","number",1001
+53,"Open flowers percentage",25,"Less than 5%","percent",2
+53,"Open flowers percentage",26,"5-24%","percent",14
+53,"Open flowers percentage",27,"25-49%","percent",37
+53,"Open flowers percentage",28,"50-74%","percent",62
+53,"Open flowers percentage",29,"75-94%","percent",84
+53,"Open flowers percentage",30,"95% or more","percent",95
+54,"Pollen cones present (10000)",32,"Less than 3","number",1
+54,"Pollen cones present (10000)",33,"3 to 10","number",5
+54,"Pollen cones present (10000)",39,"11 to 100","number",50
+54,"Pollen cones present (10000)",40,"101 to 1,000","number",500
+54,"Pollen cones present (10000)",41,"1,001 to 10,000","number",5000
+54,"Pollen cones present (10000)",42,"More than 10,000","number",10001
+55,"Open pollen cones percentage",25,"Less than 5%","percent",2
+55,"Open pollen cones percentage",26,"5-24%","percent",14
+55,"Open pollen cones percentage",27,"25-49%","percent",37
+55,"Open pollen cones percentage",28,"50-74%","percent",62
+55,"Open pollen cones percentage",29,"75-94%","percent",84
+55,"Open pollen cones percentage",30,"95% or more","percent",95
+56,"Fruits present (10000)",32,"Less than 3","number",1
+56,"Fruits present (10000)",33,"3 to 10","number",5
+56,"Fruits present (10000)",39,"11 to 100","number",50
+56,"Fruits present (10000)",40,"101 to 1,000","number",500
+56,"Fruits present (10000)",41,"1,001 to 10,000","number",5000
+56,"Fruits present (10000)",42,"More than 10,000","number",10001
+57,"Fruits present (1000)",32,"Less than 3","number",1
+57,"Fruits present (1000)",33,"3 to 10","number",5
+57,"Fruits present (1000)",39,"11 to 100","number",50
+57,"Fruits present (1000)",40,"101 to 1,000","number",500
+57,"Fruits present (1000)",43,"More than 1,000","number",1001
+58,"Ripe fruit percentage",25,"Less than 5%","percent",2
+58,"Ripe fruit percentage",26,"5-24%","percent",14
+58,"Ripe fruit percentage",27,"25-49%","percent",37
+58,"Ripe fruit percentage",28,"50-74%","percent",62
+58,"Ripe fruit percentage",29,"75-94%","percent",84
+58,"Ripe fruit percentage",30,"95% or more","percent",95
+59,"Recent fruit or seed drop (10000)",32,"Less than 3","number",1
+59,"Recent fruit or seed drop (10000)",33,"3 to 10","number",5
+59,"Recent fruit or seed drop (10000)",39,"11 to 100","number",50
+59,"Recent fruit or seed drop (10000)",40,"101 to 1,000","number",500
+59,"Recent fruit or seed drop (10000)",41,"1,001 to 10,000","number",5000
+59,"Recent fruit or seed drop (10000)",42,"More than 10,000","number",10001
+60,"Recent fruit or seed drop (1000)",32,"Less than 3","number",1
+60,"Recent fruit or seed drop (1000)",33,"3 to 10","number",5
+60,"Recent fruit or seed drop (1000)",39,"11 to 100","number",50
+60,"Recent fruit or seed drop (1000)",40,"101 to 1,000","number",500
+60,"Recent fruit or seed drop (1000)",43,"More than 1,000","number",1001
+61,"Unripe seed cones present (10000)",32,"Less than 3","number",1
+61,"Unripe seed cones present (10000)",33,"3 to 10","number",5
+61,"Unripe seed cones present (10000)",39,"11 to 100","number",50
+61,"Unripe seed cones present (10000)",40,"101 to 1,000","number",500
+61,"Unripe seed cones present (10000)",41,"1,001 to 10,000","number",5000
+61,"Unripe seed cones present (10000)",42,"More than 10,000","number",10001
+62,"Ripe seed cones present (10000)",32,"Less than 3","number",1
+62,"Ripe seed cones present (10000)",33,"3 to 10","number",5
+62,"Ripe seed cones present (10000)",39,"11 to 100","number",50
+62,"Ripe seed cones present (10000)",40,"101 to 1,000","number",500
+62,"Ripe seed cones present (10000)",41,"1,001 to 10,000","number",5000
+62,"Ripe seed cones present (10000)",42,"More than 10,000","number",10001
+63,"Recent cone or seed drop (10000)",32,"Less than 3","number",1
+63,"Recent cone or seed drop (10000)",33,"3 to 10","number",5
+63,"Recent cone or seed drop (10000)",39,"11 to 100","number",50
+63,"Recent cone or seed drop (10000)",40,"101 to 1,000","number",500
+63,"Recent cone or seed drop (10000)",41,"1,001 to 10,000","number",5000
+63,"Recent cone or seed drop (10000)",42,"More than 10,000","number",10001
+64,"New side branches (1000)",32,"Less than 3","number",1
+64,"New side branches (1000)",33,"3 to 10","number",5
+64,"New side branches (1000)",39,"11 to 100","number",50
+64,"New side branches (1000)",40,"101 to 1,000","number",500
+64,"New side branches (1000)",43,"More than 1,000","number",1001
+65,"Receptacles (1000)",32,"Less than 3","number",1
+65,"Receptacles (1000)",33,"3 to 10","number",5
+65,"Receptacles (1000)",39,"11 to 100","number",50
+65,"Receptacles (1000)",40,"101 to 1,000","number",500
+65,"Receptacles (1000)",43,"More than 1,000","number",1001
+66,"Receptacles percentage",25,"Less than 5%","percent",2
+66,"Receptacles percentage",26,"5-24%","percent",14
+66,"Receptacles percentage",27,"25-49%","percent",37
+66,"Receptacles percentage",28,"50-74%","percent",62
+66,"Receptacles percentage",29,"75-94%","percent",84
+66,"Receptacles percentage",30,"95% or more","percent",95
+69,"Young needle bundles present (10000)",32,"Less than 3","number",1
+69,"Young needle bundles present (10000)",33,"3 to 10","number",5
+69,"Young needle bundles present (10000)",39,"11 to 100","number",50
+69,"Young needle bundles present (10000)",40,"101 to 1,000","number",500
+69,"Young needle bundles present (10000)",41,"1,001 to 10,000","number",5000
+69,"Young needle bundles present (10000)",42,"More than 10,000","number",10001
+70,"Emerging needle bundles (10000)",32,"Less than 3","number",1
+70,"Emerging needle bundles (10000)",33,"3 to 10","number",5
+70,"Emerging needle bundles (10000)",39,"11 to 100","number",50
+70,"Emerging needle bundles (10000)",40,"101 to 1,000","number",500
+70,"Emerging needle bundles (10000)",41,"1,001 to 10,000","number",5000
+70,"Emerging needle bundles (10000)",42,"More than 10,000","number",10001
+71,"Potential needle canopy fullness (dead branch)",25,"Less than 5%","percent",2
+71,"Potential needle canopy fullness (dead branch)",26,"5-24%","percent",14
+71,"Potential needle canopy fullness (dead branch)",27,"25-49%","percent",37
+71,"Potential needle canopy fullness (dead branch)",28,"50-74%","percent",62
+71,"Potential needle canopy fullness (dead branch)",29,"75-94%","percent",84
+71,"Potential needle canopy fullness (dead branch)",30,"95% or more","percent",95
+72,"Potential needle canopy color (dead branch)",25,"Less than 5%","percent",2
+72,"Potential needle canopy color (dead branch)",26,"5-24%","percent",14
+72,"Potential needle canopy color (dead branch)",27,"25-49%","percent",37
+72,"Potential needle canopy color (dead branch)",28,"50-74%","percent",62
+72,"Potential needle canopy color (dead branch)",29,"75-94%","percent",84
+72,"Potential needle canopy color (dead branch)",30,"95% or more","percent",95
+73,"Potential leaf canopy fullness (dead branch)",25,"Less than 5%","percent",2
+73,"Potential leaf canopy fullness (dead branch)",26,"5-24%","percent",14
+73,"Potential leaf canopy fullness (dead branch)",27,"25-49%","percent",37
+73,"Potential leaf canopy fullness (dead branch)",28,"50-74%","percent",62
+73,"Potential leaf canopy fullness (dead branch)",29,"75-94%","percent",84
+73,"Potential leaf canopy fullness (dead branch)",30,"95% or more","percent",95
+74,"Potential leaf canopy color (dead branch)",25,"Less than 5%","percent",2
+74,"Potential leaf canopy color (dead branch)",26,"5-24%","percent",14
+74,"Potential leaf canopy color (dead branch)",27,"25-49%","percent",37
+74,"Potential leaf canopy color (dead branch)",28,"50-74%","percent",62
+74,"Potential leaf canopy color (dead branch)",29,"75-94%","percent",84
+74,"Potential leaf canopy color (dead branch)",30,"95% or more","percent",95

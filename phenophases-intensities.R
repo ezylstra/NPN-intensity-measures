@@ -1,11 +1,12 @@
 # Exploring relationships between plant phenophases and intensity categories
 # ER Zylstra
-# 12 May 2025
+# 13 May 2025
 
 library(dplyr)
 library(stringr)
 library(lubridate)
 library(rnpn)
+library(jsonlite)
 
 rm(list = ls())
 
@@ -104,82 +105,10 @@ ia <- ia %>%
          intensity_value_name = value_name,
          intensity_midpoint = value)
 
-#########################
-# Few notes/questions on intensity categories
-
-# Categories 13 and 41 (Leaf size, in %) seem to be identical
-filter(ia, intensity_category_id %in% c(13, 41))
-  # I think category 13 was replaced by 41
-
 # Intensity categories labled as "peak" (categories 31-34) are confusing 
 # because they can have numeric or qualitative responses.
 filter(ia, grepl("peak", intensity_name))
 filter(ia_orig, grepl("peak", category_name))
-  # Doesn't look like these were used in recent years 
-#########################
-
-# IMPORTANT NOTE: ##############################################################
-# Want to match up phenophases and intensity categories. Originally I did this
-# using status intensity data (downloaded all plant data in 2024!). However, I
-# later learned about the Secondary Phenophase Details table available in the 
-# API that lists all species-phenophase-abundance/intensity categories (they
-# call this the SSPI data). Import the SSPI data and compare at the bottom of 
-# this script. 
-################################################################################
-
-# Download status-intensity data ----------------------------------------------#
-
-# Commenting out much of the code below since I don't want to accidentally start 
-# a new download or overwrite the existing file (there are a lot of records and 
-# it takes a while!)
-
-# Limit download to plants by finding relevant taxonomic orders first
-  all_spp <- npn_species()
-  plant_spp <- all_spp %>%
-    filter(kingdom == "Plantae") %>%
-    select(species_id, common_name, functional_type, class_id, class_name)
-  plant_classes <- unique(plant_spp$class_id)
-  
-# Set year of interest
-  yr <- 2024
-
-# # Download status-intensity data (this takes a long time! millions of records)
-#   si_orig <- npn_download_status_data(
-#     request_source = "erinz",
-#     years = yr,
-#     class_ids = plant_classes,
-#     climate_data = FALSE,
-#     additional_fields = c("species_functional_type")
-#   )
-# 
-# # Remove unnecessary columns 
-#   si_orig <- si_orig %>%
-#     select(-c(update_datetime, elevation_in_meters, genus, species,
-#               kingdom, day_of_year, abundance_value))
-# 
-# # Don't need all the observations. Just want a table that provides combinations
-# # of species, phenophase, and intensity category (when specified). 
-#   si_combos <- si_orig %>%
-#     filter(intensity_category_id != -9999) %>%
-#     distinct(species_id, common_name, species_functional_type, phenophase_id,
-#              phenophase_description, intensity_category_id, intensity_value)
-# # Write this to file
-#   write.csv(si_combos,
-#             paste0("npn-data/si-plants-", yr, "-spp-ph-int-combos.csv"),
-#             row.names = FALSE)
-
-# Load si data and combine with phenophase, intensity information -------------#
-
-# Read in the species-phenophase-intensity category combination file
-si_combos <- read.csv(paste0("npn-data/si-plants-", yr, 
-                             "-spp-ph-int-combos.csv"))
-
-# Check that each intensity category has multiple values (other than -9999)
-si_combos %>%
-  filter(intensity_value != "-9999") %>%
-  group_by(intensity_category_id) %>%
-  summarize(nlevels = n_distinct(intensity_value)) %>%
-  data.frame()
 
 # Create better intensity "type" classification to account for "peak" categories
 ia <- ia %>%
@@ -192,44 +121,123 @@ ia <- ia %>%
   select(-c(type1, type2)) %>%
   data.frame()
 
+#########################
+# One note on intensity categories
+
+# Categories 13 and 41 (Leaf size, in %) seem to be identical
+filter(ia, intensity_category_id %in% c(13, 41))
+  # I think category 13 was replaced by 41
+#########################
+
 # Summarize information about each intensity category
 ia_cats <- ia %>%
   group_by(intensity_category_id, intensity_name, intensity_type) %>%
   summarize(nlevels = n(), .groups = "keep") %>%
   data.frame()
 
-# Create dataframe with unique combinations of phenophase and intensity category
-# that were used in 2024
-ph_int <- si_combos %>%
-  group_by(phenophase_id, phenophase_description, intensity_category_id) %>%
-  summarize(n_spp = n_distinct(common_name), .groups = "keep") %>%
-  left_join(select(ph, phenophase_id, category, class_id, class_name),
-            by = "phenophase_id") %>%
+# IMPORTANT NOTE: ##############################################################
+# Want to match up phenophases and intensity categories. Originally I did this
+# using status intensity data (downloaded all plant data in 2024!). However, I
+# later learned about the Secondary Phenophase Details table available in the 
+# API that lists all species-phenophase-abundance/intensity categories (they
+# call this the SSPI data). Originally I checked that these two sources of data
+# provided matching information, which they did. Removed code that downloaded
+# massive status-intensity dataset and just kept the SPI data after that
+################################################################################
+
+# Obtain SSPI data (species-phenophase-intensity combos) ----------------------#
+
+json_data <- read_json(
+  "https://services.usanpn.org/npn_portal/phenophases/getSecondaryPhenophaseDetails.json",
+  simplifyVector = TRUE
+)
+
+colnames(json_data)
+  # species_specific_phenophase_id # unique identifier
+  # phenophase_id             # 149 
+  # species_id                # 1887
+  # additional_definition 
+  # active                    # 0/1
+  # effective_datetime        # First date this was effective
+  # deactivation_datetime     # Last date this was effective ("" = still active)
+  # multimedia_uri 
+  # multimedia_credit
+  # abundance_category        # Two-digit ID or ""
+  # extent_min                # Not sure what this is (1 or "")
+  # extent_max                # Not sure what this is (1000000 or "")
+
+spi <- json_data %>%
+  select(-c(multimedia_uri, multimedia_credit, extent_min, extent_max)) %>%
+  rename(sspi = species_specific_phenophase_id,
+         startdate = effective_datetime,
+         stopdate = deactivation_datetime) %>%
+  mutate(startdate = as_date(startdate),
+         stopdate = as_date(stopdate),
+         abundance_category = ifelse(abundance_category == "", 
+                                     NA, abundance_category)) %>%
+  rename(intensity_category_id = abundance_category)
+# Will leave the additional_definition column in there for now, though it's 
+# probably unnecessary
+
+# Write to file
+# write.csv(spi, "npn-data/spps-phenophases-intensities.csv", row.names = FALSE)
+
+# Identify unique combinations of phenophase and intensity category -----------#
+
+# Remove species-phenophase combinations that don't have intensity categories or
+# have intensity categories that were not used in 2024-2025
+spi <- spi %>%
+  select(-c(additional_definition, sspi)) %>%
+  mutate(stopyear = year(stopdate)) %>%
+  filter(!is.na(intensity_category_id)) %>%
+  filter(stopyear >= 2024 | is.na(stopyear)) %>%
+  select(-stopyear)
+
+# Group SPI data
+ph_int <- spi %>%
+  group_by(phenophase_id, intensity_category_id) %>%
+  summarize(n_spp = n_distinct(species_id), .groups = "keep") %>%
+  mutate(intensity_category_id = as.integer(intensity_category_id)) %>%
+  data.frame()
+
+# Add information from other datasets
+ph_int <- ph_int %>%
+  left_join(ph, by = "phenophase_id") %>%
   left_join(ia_cats, by = "intensity_category_id") %>%
-  data.frame() %>%
+  # Remove any phenophases not associated with plants
+  filter(!is.na(class_id)) %>%
+  relocate(c(phenophase_name, class_id, class_name, category), 
+           .after = "phenophase_id")  %>%
+  relocate(c(intensity_name, intensity_type, nlevels),
+           .after = "intensity_category_id") %>%
+  rename(intensity_levels = nlevels) %>%
+  # Sort
   arrange(class_id, phenophase_id)
 
-# Write this to file
-# write.csv(ph_int,
-#           paste0("npn-data/phenophases-intensities-", yr, ".csv"),
+# Write to file
+# write.csv(ph_int, 
+#           "npn-data/phenophases-intensities-2024.csv", 
 #           row.names = FALSE)
 
-# Write dataframe with intensity values/midpoints to file
+
+# Write dataframe with intensity values/midpoints to file (just those categories
+# used in 2024-2025)
 ia_yr <- ia %>%
   filter(intensity_category_id %in% unique(ph_int$intensity_category_id))
+
 # write.csv(ia_yr,
-#           paste0("npn-data/intensity-values-", yr, ".csv"),
+#           "npn-data/intensity-values-2024.csv",
 #           row.names = FALSE)
+
 
 #########################
 # Few notes/questions on phenophase-intensity associations
 
-select(ph_int, -nlevels)
+select(ph_int, -c(intensity_levels, n_spp))
 
-# Two phenophase classes are missing from these phenophase-intensity summaries: 
-# 5 (Falling leaves or needles) and 9 (End of flowering). 
-# I think this is because there are no intensity categories associated with 
-# phenophases in these classes. 
+# One phenophase class is missing from these phenophase-intensity summaries: 
+# 5 (Falling leaves or needles). I think this is because there are no intensity 
+# categories associated with phenophases in this class. 
 
 # Most phenophases associated with a single intensity category. 
 # Exceptions have 2 intensity categories with different max values (1000, 10000)
@@ -246,63 +254,3 @@ select(ph_int, -nlevels)
 # Only one qualitative intensity category used: Pollen release.
 # None of the "peak" intensity categories were used.
 #########################
-
-# SSPI data (from API) --------------------------------------------------------#
-
-# Read in csv with species-phenophase-abundance/intensity category combinations
-# Got this (SSPI data) from the NPN API see:
-# OneDrive/NPN/IntensityMeasures/get-phenophase-intensity-pairs.R
-
-spi <- read.csv("npn-data/spps-phenophases-intensities.csv")
-
-head(select(spi, -additional_definition))
-head(ia)
-head(ia_cats)
-head(ph_int)
-
-spi <- spi %>%
-  rename(intensity_category_id = abundance_category)
-
-# Do all intensity categories in ia/ia_cats appear in SSPI data?
-spi_cats <- unique(spi$intensity_category_id)
-filter(ia_cats, !intensity_category_id %in% spi_cats)
-# No. Missing the following in the SSPI data: 
-# 18 (Young needle bundles present)
-# 21 (Initial growth of buds or shoots)
-# 22 (Initial growth of shoots)
-filter(ph_int, intensity_category_id %in% c(18, 21, 22))
-# These categories must have been phased out because they weren't used in 2024
-# But why not in the table from the API, that should include categories that 
-# have been deactivated?
-
-# Do all intensity categories in ph_int (2024 combinations of phenophases and 
-# intensity categories in status data) appear in SSPI data?
-filter(ph_int, !intensity_category_id %in% spi_cats)
-# Yes
-
-# Merge SSPI data with info on intensity categories I created before:
-spi2 <- spi %>%
-  # Get rid of categories that had been deactivated
-  filter(is.na(stopdate)) %>%
-  # Get rid of spp-phenophase combinations that don't have intensity category
-  filter(!is.na(intensity_category_id)) %>%
-  # Merge with intensity category info
-  left_join(ia_cats, by = "intensity_category_id")
-count(spi2, nlevels) 
-# Everything matches up - no intensity categories in SSPI data that I didn't
-# already have from rnpn downloads
-
-
-# If the following phenophases don't appear in current SSPI table, what have 
-# they been replaced with? (18 looks like it was replaced with a similar 
-# category and different max value)
-# 21 (Initial growth of buds or shoots)
-# 22 (Initial growth of shoots)
-
-# Look for the following phenophases in SSPI table:
-# 71 (Emergence above ground)
-# 482/492/508 (Initial growth)
-spi %>% 
-  filter(phenophase_id %in% c(71, 482, 492, 508)) %>% 
-  count(intensity_category_id)
-# No intensity categories associated with these phenophases (always NA)

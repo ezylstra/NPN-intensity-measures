@@ -1,0 +1,39 @@
+"phenophase_id","phenophase_name","class_id","class_name","category","intensity_category_id","intensity_name","intensity_type","intensity_levels","n_spp"
+371,"Breaking leaf buds",1,"Initial shoot or leaf growth","Leaves",39,"Breaking leaf buds (10000)","number",6,491
+480,"Breaking needle buds",1,"Initial shoot or leaf growth","Needles",39,"Breaking leaf buds (10000)","number",6,18
+481,"Breaking needle buds",1,"Initial shoot or leaf growth","Needles",39,"Breaking leaf buds (10000)","number",6,5
+496,"Emerging needles",1,"Initial shoot or leaf growth","Needles",70,"Emerging needle bundles (10000)","number",6,20
+467,"Increasing leaf size",2,"Young leaves or needles","Leaves",41,"Leaf size","percent",5,402
+484,"Young leaves",2,"Young leaves or needles","Leaves",43,"Young leaves present (10000)","number",6,228
+485,"Young needles",2,"Young leaves or needles","Needles",44,"Young needles present (10000)","number",6,18
+486,"Young needles",2,"Young leaves or needles","Needles",69,"Young needle bundles present (10000)","number",6,20
+510,"New side branches",2,"Young leaves or needles","Leaves",64,"New side branches (1000)","number",5,1
+483,"Leaves",3,"Leaves or needles","Leaves",73,"Potential leaf canopy fullness (dead branch)","percent",6,473
+487,"Needles",3,"Leaves or needles","Needles",71,"Potential needle canopy fullness (dead branch)","percent",6,5
+489,"Leaves",3,"Leaves or needles","Leaves",38,"Plant greeness","percent",6,105
+497,"Leaves",3,"Leaves or needles","Leaves",38,"Plant greeness","percent",6,31
+509,"Leaves",3,"Leaves or needles","Leaves",38,"Plant greeness","percent",6,5
+498,"Colored leaves",4,"Colored leaves or needles","Leaves",74,"Potential leaf canopy color (dead branch)","percent",6,473
+499,"Colored needles",4,"Colored leaves or needles","Needles",72,"Potential needle canopy color (dead branch)","percent",6,5
+490,"Pollen cones",6,"Flowers or pollen cones","Pollen cones",54,"Pollen cones present (10000)","number",6,55
+493,"Flower heads",6,"Flowers or pollen cones","Flowers",52,"Flower heads present (1000)","number",5,137
+500,"Flowers or flower buds",6,"Flowers or pollen cones","Flowers",48,"Flowers and flower buds (10000)","number",6,618
+500,"Flowers or flower buds",6,"Flowers or pollen cones","Flowers",49,"Flowers and flower buds (1000)","number",5,675
+511,"Receptacles",6,"Flowers or pollen cones","Flowers",65,"Receptacles (1000)","number",5,1
+512,"Flat receptacles",6,"Flowers or pollen cones","Flowers",66,"Receptacles percentage","percent",6,1
+513,"Smooth inflated receptacles",6,"Flowers or pollen cones","Flowers",66,"Receptacles percentage","percent",6,1
+514,"Dotted inflated receptacles",6,"Flowers or pollen cones","Flowers",66,"Receptacles percentage","percent",6,1
+494,"Open flowers",7,"Open flowers or pollen cones","Flowers",53,"Open flowers percentage","percent",6,137
+495,"Open pollen cones",7,"Open flowers or pollen cones","Pollen cones",55,"Open pollen cones percentage","percent",6,55
+501,"Open flowers",7,"Open flowers or pollen cones","Flowers",50,"Open flowers percentage (individual)","percent",6,1291
+502,"Pollen release",8,"Pollen release","Flowers",51,"Pollen release","qualitative",3,312
+503,"Pollen release",8,"Pollen release","Pollen cones",51,"Pollen release","qualitative",3,55
+515,"Torn receptacles",9,"End of flowering","Flowers",66,"Receptacles percentage","percent",6,1
+516,"Fruits",10,"Fruits or seed cones","Fruits",56,"Fruits present (10000)","number",6,619
+516,"Fruits",10,"Fruits or seed cones","Fruits",57,"Fruits present (1000)","number",5,812
+392,"Unripe seed cones",11,"Unripe fruits or seed cones","Seed cones",61,"Unripe seed cones present (10000)","number",6,55
+390,"Ripe fruits",12,"Ripe fruits or seed cones","Fruits",58,"Ripe fruit percentage","percent",6,1431
+393,"Ripe seed cones",12,"Ripe fruits or seed cones","Seed cones",62,"Ripe seed cones present (10000)","number",6,55
+491,"Recent cone or seed drop",13,"Recent fruit, cone or seed drop","Seed cones",63,"Recent cone or seed drop (10000)","number",6,55
+504,"Recent fruit or seed drop",13,"Recent fruit, cone or seed drop","Fruits",59,"Recent fruit or seed drop (10000)","number",6,619
+504,"Recent fruit or seed drop",13,"Recent fruit, cone or seed drop","Fruits",60,"Recent fruit or seed drop (1000)","number",5,812

@@ -1,6 +1,6 @@
 # Exploring intensity data from sites that have collected it consistently
 # ER Zylstra
-# 28 Feb 2025
+# 13 May 2025
 
 library(dplyr)
 library(stringr)
@@ -13,16 +13,40 @@ rm(list = ls())
 # Set parameters --------------------------------------------------------------#
 
 # Identify potential site(s) of interest (can call rnpn::npn_stations() if needed)
-site_ids <- c(2, 55876, 55878, 55859)
-  # 2: Ellen's house
-  # 55876: NEON: Bonanza Creek in central AK (quaking aspen)
-  # 55878: NEON: Delta Junction in central AK (dwarf birch)
-  # 55859: NEON: Santa Rita Exp Range (creosote, velvet mesquite, desert zinnia)
 
-# Erin P had mentioned one other site, but it has very few records so ignoring
-# for now
-  # 47097: ABQ BioPark Botanic Garden (multiple spp: desert shrubs might have >1 
-  #   flowering or fruiting periods per year)
+# Ellen's house:
+  # bbox <- c(-70.70, 43.05, -70.69, 43.10)
+  # wkt <- spocc::bbox2wkt(bbox)
+  # npn_stations_by_location(wkt) 
+  # Site 2
+  
+# NEON sites in AK and AZ:
+  # All associated with network_id == 77; network_name = National Ecological Observatory Network (NEON)
+  neons <- npn_stations(state_code = c("AK", "AZ")) %>%
+    filter(network_id == 77) %>%
+    data.frame()
+  # neons
+  
+  # Names of sites we want: 
+  # BONA_092.phenology.phe - primary: Bonanza Creek in central AK (quaking aspen). Site ID = 57121 (had been 55876) 2017; 67073
+  # DEJU_065.phenology.phe - primary: Delta Junction in central AK (dwarf birch). Site ID = 57123 (had been 55878) 2016; 78787
+  # SRER_060.phenology.phe - phenocam: Santa Rita Exp Range (creosote, velvet mesquite, desert zinnia) Site ID = 57104 (had been 55859) 2017; 12354
+  
+  # Not sure if we also want: 
+  # BONA_092.phenology.phe - phenocam: Site ID = 57122
+  # DEJU_065.phenology.phe - phenocam: Site ID = 57124
+  # SRER_060.phenology.phe - primary: Site ID = 57103
+
+site_table <- data.frame(
+  site_short = c("Ellen", rep("BONA", 2), rep("DEJU", 2), rep("SRER", 2)),
+  site_name = c("Home", 
+                "BONA_092.phenology.phe - primary",
+                "BONA_092.phenology.phe - phenocam",
+                "DEJU_065.phenology.phe - primary",
+                "DEJU_065.phenology.phe - phenocam",
+                "SRER_060.phenology.phe - primary",
+                "SRER_060.phenology.phe - phenocam"),
+  site_id = c(2, 57121, 57122, 57123, 57124, 57103, 57014))
 
 # Identify years of interest (through last calendar year)
 yrs <- 2009:(year(Sys.Date()) - 1)
@@ -32,24 +56,42 @@ requestor <- "erinz"
 
 # Download and format NPN data ------------------------------------------------#
 
-for (site_id in site_ids) {
+# For now, need to download each year separately and then combine, because if
+# we request the entire yrs range in the function call, the download will abort
+# with errors when it encounters a year with no data.
+
+for (site in site_table$site_short) {
   
-  si_csv_name <- paste0("npn-data/si-site", site_id, "-",
+  si_csv_name <- paste0("npn-data/si-site", site, "-",
                         min(yrs), "-", max(yrs), ".csv")
 
   if (!file.exists(si_csv_name)) {
+    
+    for (yr in yrs) {
   
-    # Download status/intensity data (one row for each observation of a plant or 
-    # animal species and phenophase)
-    si_orig <- npn_download_status_data(
-      request_source = requestor,
-      years = yrs,
-      station_ids = site_id,
-      climate_data = FALSE,
-      additional_fields = c("site_name", 
-                            "observedby_person_id",
-                            "species_functional_type")
-    )
+      # Download status/intensity data (one row for each observation of a plant
+      # or animal species and phenophase)
+      
+      tryCatch({
+        assign(paste0("si_", yr), 
+          npn_download_status_data(
+          request_source = requestor,
+          years = yr,
+          station_ids = c(site_table$site_id[site_table$site_short == site]),
+          climate_data = FALSE,
+          additional_fields = c("site_name", 
+                                "observedby_person_id",
+                                "species_functional_type"))
+        )
+      }, 
+      error = function(e) {
+        cat("Note: No data to download for ", site, " in ", yr, "\n")
+      })
+    }
+    
+    # Combine data for all years
+    si_files <- ls()[ls() %in% paste0("si_", yrs)]
+    si_orig <- do.call(rbind, mget(si_files))
     
     # Remove animal observations and unnecessary fields
     si_orig <- si_orig %>%
@@ -58,7 +100,7 @@ for (site_id in site_ids) {
     
     # Write to file
     write.csv(si_orig, si_csv_name, row.names = FALSE)
-    rm(si_orig)
+    rm(list = c("si_orig", si_files))
     
   }  
 } 
@@ -70,7 +112,8 @@ ph_int <- read.csv("npn-data/phenophases-intensities-2024.csv")
 
 # Values/midpoints for each intensity category
 ivalues <- read.csv("npn-data/intensity-values-2024.csv") %>%
-  rename(intensity_value = intensity_value_name)
+  rename(intensity_value = intensity_value_name) %>%
+  select(-intensity_value_id)
 
 # Extract list of phenophases that were used in 2024
 ph_2024 <- sort(unique(ph_int$phenophase_id))
@@ -81,8 +124,7 @@ int_2024 <- sort(unique(ivalues$intensity_category_id))
 # Load status-intensity data for one site -------------------------------------#
 
 # Starting with Ellen's site for now
-site_id <- 2
-si_file <- paste0("npn-data/si-site", site_id, "-", 
+si_file <- paste0("npn-data/si-siteEllen-", 
                   min(yrs), "-", max(yrs), ".csv")
 
 si <- read.csv(si_file) %>%
@@ -93,18 +135,27 @@ si <- read.csv(si_file) %>%
                                                   "&gt;", ">")) %>%
   # Create phenophase_descrip that's the same as phenophase_description except 
   # all parenthetical references to taxonomic groups or locations are removed
-  mutate(phenophase_descrip = str_replace(phenophase_description,
-                                          " \\s*\\([^\\)]+\\)", "")) %>%
+  # mutate(phenophase_descrip = str_replace(phenophase_description,
+  #                                         " \\s*\\([^\\)]+\\)", "")) %>%
   # Remove any records with unknown phenophase status
-  filter(phenophase_status != -1)
+  filter(phenophase_status != -1) 
+
+# Remove site and species information we don't need
+site_plants <- si %>%
+  distinct(site_id, site_name, latitude, longitude, 
+           elevation_in_meters, state, species_id, genus, species, common_name,
+           species_functional_type, individual_id)
+si <- si %>%
+  select(-c(site_name, latitude, longitude, elevation_in_meters, state, 
+            species_id, genus, species,species_functional_type))
 
 # Filter out phenophases or intensity categories that weren't used in 2024 
-# (keeping -9999s for now)
+# (keeping NAs for now)
 si <- si %>%
   filter(phenophase_id %in% ph_2024) %>%
-  filter(intensity_category_id %in% c(int_2024, -9999))
+  filter(intensity_category_id %in% int_2024 | is.na(intensity_category_id))
 
-count(si, yr, intensity_category_id == -9999)
+count(si, yr, is.na(intensity_category_id))
 # Starting in 2013, there was always an intensity category provided.
 # Will exclude few early years when intensity category wasn't always specified
 si <- si %>%
@@ -115,18 +166,20 @@ ph_merge <- ph_int %>%
   distinct(phenophase_id, class_id, class_name)
 ivalues_missing <- ivalues %>%
   distinct(intensity_category_id, intensity_name, intensity_type) %>%
-  mutate(intensity_value_id = NA,
-         intensity_value = "-9999",
+  mutate(intensity_value = NA,
          intensity_midpoint = NA) %>%
   relocate(intensity_type, .after = "intensity_value")
 ivalues <- rbind(ivalues, ivalues_missing)
 
 si <- si %>%
-  select(-c(observation_id, observedby_person_id, site_name, latitude,
-            longitude, elevation_in_meters, state, genus, species,
-            phenophase_descrip)) %>%
+  select(-c(observation_id, observedby_person_id)) %>%
   left_join(ph_merge, by = "phenophase_id") %>%
   left_join(ivalues, by = c("intensity_category_id", "intensity_value"))
+
+# PICK UP HERE
+
+
+
 
 # Create a new column with intensity labels (factor)
 si <- si %>%

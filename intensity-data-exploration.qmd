@@ -3,6 +3,7 @@ title: "Exploration of intensity data"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 author: "Erin Zylstra"
 execute: 
+  echo: false
   error: false
   warning: false
   message: false
@@ -11,17 +12,18 @@ format:
     fig-cap-location: top
     page-layout: full
 editor: visual
+editor_options: 
+  chunk_output_type: console
 ---
 
-
 ```{r}
-#| echo: false
 
 library(dplyr)
 library(stringr)
 library(lubridate)
 library(ggplot2)
 library(cowplot)
+library(kableExtra)
 ```
 
 ## Overview
@@ -29,7 +31,6 @@ library(cowplot)
 Need some introduction to project and sites
 
 ```{r load-data}
-#| echo: false
 
 # List of sites
 sites <- c("bona", "deju", "srer", "ellen")
@@ -39,36 +40,13 @@ leaf_classes <- 1:5
 flower_classes <- 6:9
 fruit_classes <- 10:13
 
-# Load intensity data and extract site, plant information
+# List files with formatted intensity data
 intensity_files <- list.files("npn-data",
                               pattern = "intensity-site",
                               full.names = TRUE)
-
-# TODO: see whether I need to move this stuff below somewhere else  
-  # # Create plant list
-  # assign(paste0("plants_", site), 
-  #   si %>%
-  #     group_by(site_id, site_name, latitude, longitude,
-  #              elevation_in_meters, state, species_id, genus, species, common_name,
-  #              species_functional_type, individual_id) %>%
-  #     summarize(n_obs = n(),
-  #               first_year = min(yr),
-  #               last_year = max(yr),
-  #               .groups = "keep") %>%
-  #     arrange(species_functional_type, common_name, .locale = "en") %>%
-  #     data.frame()
-  # )
-  # 
-  # # Remove site and species information from intensity datasets to simplify
-  # si <- si %>%
-  #   select(-c(site_name, latitude, longitude, elevation_in_meters, state,
-  #             species_id, genus, species, species_functional_type))
-  # assign(paste0("i", site), si)
-# }
-
 ```
 
-```{r filter-data}
+```{r load-filter-data}
 
 # Summarize data available by species, individual, phenophase
 
@@ -78,64 +56,90 @@ for (site in sites) {
   filename <- intensity_files[grepl(sitecap, intensity_files)]
   si <- read.csv(filename)
 
+  # Remove any true duplicates
+  si <- si[!duplicated(si),]
   
-  # Check that there's only one observation of each plant-phenophase per day
-  # TODO: Figure out warnings for DEJU, SRER, ELLEN
+  # Occasionally there are two records for a plant-phenophase in one day with 
+  # different intensity or status values. Removing these observations too.
+  si <- si %>%
+    group_by(individual_id, phenophase_id, observation_date) %>%
+    mutate(n_obs = n()) %>%
+    ungroup() %>%
+    filter(n_obs == 1) %>%
+    select(-n_obs) %>%
+    data.frame()
+  
+  # Doublecheck that there's only one observation of each plant-phenophase per day
   if (nrow(si) != nrow(distinct(si, individual_id, phenophase_id, observation_date))) {
     warning("There is more than one observation of some plant phenophases at ",
             sitecap, " in a day")
   }
   
   # Calculate the interval between observations of the plant, phenophase
-  # TODO: Make this more efficient for Ellen's site with 280k + records
   si <- si %>%
     arrange(common_name, individual_id, phenophase_description, yr, day_of_year)
-  si$interval <- NA
-  for (i in 2:nrow(si)) {
-    si$interval[i] <- ifelse(
-      si$individual_id[i] == si$individual_id[i - 1] &
-        si$phenophase_description[i] == si$phenophase_description[i - 1] &
-          si$yr[i] == si$yr[i - 1], 
-      si$day_of_year[i] - si$day_of_year[i - 1], 
-      NA
-    )
-  }
+  
+  si$interval_raw <- c(NA, si$day_of_year[2:nrow(si)] - si$day_of_year[1:(nrow(si) - 1)])
+  same_ind <- 1 * (si$individual_id[2:nrow(si)] == si$individual_id[1:(nrow(si) - 1)])
+  same_php <- 1 * (si$phenophase_id[2:nrow(si)] == si$phenophase_id[1:(nrow(si) - 1)])
+  same_yr <- 1 * (si$yr[2:nrow(si)] == si$yr[1:(nrow(si) - 1)])
+  si$same_ind <- c(NA, same_ind)
+  si$same_php <- c(NA, same_php)
+  si$same_yr <- c(NA, same_yr)
+  si <- si %>%
+    mutate(interval = case_when(
+      same_ind == 0 ~ NA,
+      same_php == 0 ~ NA,
+      same_yr == 0 ~ NA,
+      is.na(interval_raw) ~ NA,
+      .default = interval_raw
+    )) %>%
+    select(-c(interval_raw, same_ind, same_php, same_yr))
+
   assign(paste0("si_", site), si)
 }
 
-# Create combined SI dataset
+# Create intensity dataset combined for all sites
 si_files <- ls()[ls() %in% paste0("si_", sites)]
 si <- do.call(rbind, mget(si_files))
-  
-# PICK UP HERE
-  
+rownames(si) <- NULL
+rm(list = si_files)
+
+# Add short site name
+si <- si %>%
+  mutate(site = str_to_lower(str_sub(site_name, 1, 4))) %>%
+  mutate(site = str_replace_all(site, "home", "ellen"))
+
 # Summarize amount and quality of information for each plant, phenophase, year
 pl_ph_yr <- si %>%
-  group_by(common_name, individual_id, phenophase_description, yr) %>%
+  group_by(site, common_name, individual_id, phenophase_description, yr) %>%
   summarize(nobs = n(),
             first_obs = min(day_of_year),
             last_obs = max(day_of_year),
             mean_int = round(mean(interval, na.rm = TRUE), 2),
-            max_int = max(interval, na.rm = TRUE),
+            max_int = ifelse(nobs ==1, NA, max(interval, na.rm = TRUE)),
             n_inphase = sum(phenophase_status),
             n_intvalue = sum(!is.na(intensity_value)),
             prop_inphase = round(n_inphase / nobs, 2),
             prop_intvalue = round(n_intvalue / n_inphase, 2),
             .groups = "keep") %>%
   data.frame()
-count(pl_ph_yr, yr)
-  # For BONA-quaking aspen, just 5 phenophases:
-  # Breaking leaf buds, Leaves, Increating leaf size, Colored leaves, Open flowers
 
-# For exploring intensity data, we will:
+# For exploring intensity data, we will filter the data:
   # remove plant-php-year combos with no observations in phase
   # remove plant-php-year combos with no observations with intensity values
-  # remove plant-php-year combos when mean interval > 14 days (2017 only)
+  # remove plant-php-year combos with < 5 observations
+  # remove plant-php-year combos when mean interval > 14 days
+
+# Side note: Checked that individual_id's for plants at NEON sites weren't 
+# changing annually like the site_id's do. Luckily, that doesn't seem to be the 
+# case, as most plants are monitored for multiple years)
 
 pl_ph_yr <- pl_ph_yr %>%
 mutate(remove = case_when(
   n_inphase == 0 ~ 1,
   n_intvalue == 0 ~ 1,
+  nobs < 5 ~ 1,
   mean_int > 14 ~ 1,
   .default = 0
 ))
@@ -145,24 +149,65 @@ si <- si %>%
   filter(remove == 0) %>%
   select(-remove)
 
-# Summarize remaining observations:
+# Check that there's only one intensity category for each species-phenophase?
+  spil <- si %>%
+    filter(!is.na(intensity_category_id)) %>%
+    distinct(common_name, phenophase_description, intensity_name, 
+             intensity_type, intensity_label)
+  spl <- si %>%
+    distinct(common_name, phenophase_description)
+  # setdiff(spl, spil[, 1:2])
 
-# Site-species summary
+# Make intensity midpoints = 0 if status = 0 and add intensity cat labels
+si <- si %>%
+  mutate(intensity_midpoint = ifelse(phenophase_status == 0, 
+                                     0, intensity_midpoint)) %>%
+  select(-c(intensity_name, intensity_type, intensity_label)) %>%
+  left_join(spil, by = c("common_name", "phenophase_description"))
+```
+
+```{r summarize-data}
+
+# Site-species summaries
 site_spp <- si %>%
   mutate(php_type = case_when(
     class_id %in% leaf_classes ~ "Leaves",
     class_id %in% flower_classes ~ "Flowers",
     class_id %in% fruit_classes ~ "Fruit"
   )) %>%
-  group_by(site, common_name) %>%
+  group_by(site, common_name, species_functional_type) %>%
   summarize(n_plants = n_distinct(individual_id),
             first_yr = min(yr),
             last_yr = max(yr),
+            n_yrs = n_distinct(yr),
+            n_php = n_distinct(phenophase_id),
             leaf_php = n_distinct(phenophase_id[php_type == "Leaves"]),
             flower_php = n_distinct(phenophase_id[php_type == "Flowers"]),
-            fruit_php = n_distinct(phenophase_id[php_type == "Fruit"])) %>%
+            fruit_php = n_distinct(phenophase_id[php_type == "Fruit"]),
+            .groups = "keep") %>%
+  arrange(site, species_functional_type, desc(n_plants), desc(n_yrs),
+          desc(n_php)) %>%
   data.frame()
 
+# Identify which species to focus on at Ellen's site: 1/2 species per functional
+# type, prioritizing no. plants, no. years, and then no. phenophases
+site_spp <- site_spp %>%
+  group_by(site, species_functional_type) %>%
+  mutate(priority = row_number()) %>%
+  # Keep all species that have at least 3 plants
+  mutate(priority = ifelse(n_plants > 2, 1, priority)) %>%
+  data.frame()
+
+# Remove any species that are lower priority
+si <- si %>%
+  left_join(select(site_spp, site, common_name, priority),
+            by = c("site", "common_name")) %>%
+  filter(priority == 1) %>%
+  select(-priority)
+site_spp <- site_spp %>%
+  filter(priority == 1) %>%
+  select(-priority)
+  
 # Site-species-phenophase summary
 site_spp_ph <- si %>%
   group_by(site, common_name, phenophase_description) %>%
@@ -178,6 +223,89 @@ site_spp_ph <- si %>%
   relocate(obs_per_yr, .after = "n_obs") %>%
   data.frame()
 
+# Site-plant-phenophase-year summary (for filtered observations)
+si_keep <- si %>%
+  distinct(individual_id, phenophase_description, yr) %>%
+  mutate(keep = 1)
+pl_ph_yr <- pl_ph_yr %>%
+  left_join(si_keep, by = c("individual_id", "phenophase_description", "yr")) %>%
+  filter(!is.na(keep)) %>%
+  select(-c(keep, remove))
+
+# Proportion of plant-phenophase-years when there was at least one positive
+# phenophase observation without an intensity value
+sum(pl_ph_yr$prop_intvalue == 1) / nrow(pl_ph_yr) # >0.99
+
+```
+
+```{r tbl-site-spp}
+#| tbl-cap: Amount of filtered data available for each species at each site.
+
+site_spp_t <- site_spp %>%
+  mutate(site = str_to_upper(site),
+         yr_range = paste(first_yr, "-", last_yr),
+         phps = paste0(n_php, " (", leaf_php, ",", flower_php, 
+                       ",", fruit_php, ")")) %>%
+  relocate(yr_range, .before = "n_yrs") %>%
+  select(-c(first_yr, last_yr, n_php, leaf_php, flower_php, fruit_php)) %>%
+  kbl(col.names = c("Site", "Species", "Functional group", "No. plants",
+                    "Year range", "No. years", "No. phenophases (leaf, flower, fruit)"),
+      align = c(rep("r", 3), rep("c", 4))) %>%
+  kable_styling(full_width = FALSE, font_size = 11)
+site_spp_t
+```
+
+```{r GAMs}
+
+intensity_cats <- si %>%
+  group_by(class_id, intensity_label, intensity_type) %>%
+  summarize(n = n(),
+            n_spp = n_distinct(common_name),
+            n_plants = n_distinct(individual_id),
+            n_yrs = n_distinct(yr),
+            .groups = "keep") %>%
+  data.frame()
+
+si %>%
+  group_by(common_name, phenophase_description, intensity_label) %>% 
+  summarize(n_obs = n(),
+            n_inphase = sum(phenophase_status),
+            prop_inphase = round(n_inphase / n_obs, 2)) %>%
+  data.frame() %>%
+  arrange(intensity_label, desc(prop_inphase))
+
+# for (intens in intensity_cats$intensity_label) {
+  
+  intens <- intensity_cats$intensity_label[1]
+  si_int <- filter(si, intensity_label == intens)
+  spps <- unique(si_int$common_name)
+  
+  # for (spp in spps) {
+  
+    spp <- spps[6]
+    si_int_spp <- filter(si_int, common_name == spp)
+    
+    # ggplot(filter(si_int_spp, yr == 2018), 
+    #        aes(x = day_of_year, y = intensity_midpoint)) +
+    #   geom_line() +
+    #   facet_wrap(vars(individual_id), scales = "free_y")
+      
+    ggplot(si_int_spp, aes(x = day_of_year, y = intensity_midpoint)) +
+      geom_line(aes(color = factor(individual_id))) +
+      facet_grid(yr ~ ., scales = "free_y") +
+      theme(legend.position = "none")
+
+    # Remove 2020 @ DEJU (or other sites) since I think data collection was
+    # interrupted?
+    
+  # }
+# }
+
+
+```
+
+```{r status-intensity-curves}
+
 
 
 
@@ -186,10 +314,13 @@ site_spp_ph <- si %>%
 
 ```
 
+```{r derived-metrics}
 
-```{r ellen-species}
 
-# Need to narrow down species of interest at Ellen's site
-plants <- plants_ellen
+
+
+
+
 
 ```
+

@@ -150,7 +150,7 @@ for (site in unique(all_sites$site_short)) {
   
   # For all NEON sites, extract data for species of interest. (Not sure what
   # species will be most useful at Ellen's site)
-  if (site != "Ellen") {
+  if (site != "ELLEN") {
     si <- si %>%
       filter(str_detect(common_name, 
                         str_replace_all(all_sites$species[all_sites$site_short == site][1], 

@@ -129,7 +129,9 @@ pl_ph_yr <- si %>%
   # remove plant-php-year combos with no observations in phase
   # remove plant-php-year combos with no observations with intensity values
   # remove plant-php-year combos with < 5 observations
-  # remove plant-php-year combos when mean interval > 14 days
+  # remove plant-php-year combos when max interval > 14 days
+  # (using 14-day max interval cutoff rather than mean interval mostly removes
+  # no. years for Ellen's plants; most now 3-4 years)
 
 # Side note: Checked that individual_id's for plants at NEON sites weren't 
 # changing annually like the site_id's do. Luckily, that doesn't seem to be the 
@@ -140,7 +142,8 @@ mutate(remove = case_when(
   n_inphase == 0 ~ 1,
   n_intvalue == 0 ~ 1,
   nobs < 5 ~ 1,
-  mean_int > 14 ~ 1,
+  # mean_int > 14 ~ 1,
+  max_int > 14 ~ 1,
   .default = 0
 ))
 si <- si %>%
@@ -223,19 +226,18 @@ site_spp_ph <- si %>%
   relocate(obs_per_yr, .after = "n_obs") %>%
   data.frame()
 
-# Site-plant-phenophase-year summary (for filtered observations)
-si_keep <- si %>%
-  distinct(individual_id, phenophase_description, yr) %>%
-  mutate(keep = 1)
-pl_ph_yr <- pl_ph_yr %>%
-  left_join(si_keep, by = c("individual_id", "phenophase_description", "yr")) %>%
-  filter(!is.na(keep)) %>%
-  select(-c(keep, remove))
-
-# Proportion of plant-phenophase-years when there was at least one positive
-# phenophase observation without an intensity value
-sum(pl_ph_yr$prop_intvalue == 1) / nrow(pl_ph_yr) # >0.99
-
+# # Site-plant-phenophase-year summary (for filtered observations)
+# si_keep <- si %>%
+#   distinct(individual_id, phenophase_description, yr) %>%
+#   mutate(keep = 1)
+# pl_ph_yr <- pl_ph_yr %>%
+#   left_join(si_keep, by = c("individual_id", "phenophase_description", "yr")) %>%
+#   filter(!is.na(keep)) %>%
+#   select(-c(keep, remove))
+# 
+# # Proportion of plant-phenophase-years when all positive phenophase observations
+# # had an intensity value
+# sum(pl_ph_yr$prop_intvalue == 1) / nrow(pl_ph_yr) # >0.99
 ```
 
 ```{r tbl-site-spp}
@@ -257,7 +259,7 @@ site_spp_t
 
 ```{r exclude-some-intensity-cats}
 
-# Create table summarizing amount of information per intensity category0
+# Create table summarizing amount of information per intensity category
 intensity_cats <- si %>%
   group_by(class_id, intensity_label, intensity_type) %>%
   summarize(n = n(),
@@ -269,7 +271,7 @@ intensity_cats <- si %>%
   data.frame()
 
 # Identify categories that we want to exclude because:
-  # Only one intensity value representend in dataset
+  # Only one intensity value represented in dataset
   # Fewer than 50 observations across species, plants, and years
 intensity_cats <- intensity_cats %>%
   mutate(exclude = case_when(
@@ -287,9 +289,6 @@ si <- si %>%
 intensity_cats <- intensity_cats %>%
   filter(exclude == 0) %>%
   select(-exclude)
-```
-
-```{r GAMs}
 
 # Log transform numeric intensity values 
 si <- si %>%
@@ -298,24 +297,95 @@ si <- si %>%
   mutate(intensity_midpoint_log = ifelse(intensity_type == "number", 
                                          log(intensity_midpoint_no0), NA))
 
-# How many species-phenophase/intensity combinations?
-si %>%
-  group_by(common_name, class_id, phenophase_description, intensity_label) %>% 
-  summarize(n_obs = n(),
+# Summarize data available for each plant, phenophase, and year (in part
+# to figure out what data to include in GAMs). Recreating pl_ph_yr...
+  # Going to use rle(phenophase_status) to understand the patterns:
+    # length(rle$values) = number of 0/1 status sequences
+    # first(rle$values) = state at first observation
+    # last(rle$values) = state at last observation
+pl_ph_yr <- si %>%
+  arrange(site, individual_id, phenophase_id, observation_date) %>%
+  group_by(site, common_name, individual_id, phenophase_description,
+           intensity_label, class_id, yr) %>%
+  summarize(nobs = n(),
+            first_obs = min(day_of_year),
+            last_obs = max(day_of_year),
+            mean_int = round(mean(interval, na.rm = TRUE), 2),
+            max_int = ifelse(nobs ==1, NA, max(interval, na.rm = TRUE)),
             n_inphase = sum(phenophase_status),
-            prop_inphase = round(n_inphase / n_obs, 2)) %>%
-  data.frame() %>%
-  arrange(class_id, intensity_label, desc(prop_inphase))
-# 64 combos
+            # n_intvalue = sum(!is.na(intensity_value)),
+            prop_inphase = round(n_inphase / nobs, 2),
+            # prop_intvalue = round(n_intvalue / n_inphase, 2),
+            n_states = length(rle(phenophase_status)$values),
+            first_status = first(rle(phenophase_status)$values),
+            last_status = last(rle(phenophase_status)$values),
+            .groups = "keep") %>%
+  data.frame()
 
-for (intens in intensity_cats$intensity_label) {
+# Summarize across species
+pl_ph_yr %>%
+  group_by(common_name) %>%
+  summarize(n = n(),
+            n_status0 = sum(prop_inphase < 1),
+            prop_status0 = round(n_status0 / n, 2),
+            n_states_mn = round(mean(n_states), 2),
+            n_states_min = min(n_states),
+            n_states_max = max(n_states),
+            prop_start0 = round(sum(first_status == 0) / n, 2),
+            prop_end0 = round(sum(last_status == 0) / n, 2), 
+            prop_00 = round(sum(first_status == 0 & last_status == 0) / n, 2),
+            .groups = "keep") %>%
+  data.frame() %>%
+  arrange(desc(n))
+
+# Summarize across phenophases
+pl_ph_yr %>%
+  group_by(class_id, phenophase_description, intensity_label) %>%
+  summarize(n = n(),
+            n_status0 = sum(prop_inphase < 1),
+            prop_status0 = round(n_status0 / n, 2),
+            n_states_mn = round(mean(n_states), 2),
+            n_states_min = min(n_states),
+            n_states_max = max(n_states),
+            prop_start0 = round(sum(first_status == 0) / n, 2),
+            prop_end0 = round(sum(last_status == 0) / n, 2), 
+            prop_00 = round(sum(first_status == 0 & last_status == 0) / n, 2),
+            .groups = "keep") %>%
+  data.frame()
+# Simpler...
+php_summary <- pl_ph_yr %>%
+  group_by(class_id, phenophase_description, intensity_label) %>%
+  summarize(n = n(),
+            n_states_mn = round(mean(n_states), 2),
+            n_states_max = max(n_states),
+            prop_00 = round(sum(first_status == 0 & last_status == 0) / n, 2),
+            .groups = "keep") %>%
+  data.frame()
+
+# Look more closely at some phenophases, where mean number of status series
+# varies a lot from 3 (ideally 0-1-0) and the proportion of plant-php-yrs
+# that start and end out of phase is << 1
+intensities <- php_summary %>%
+  filter(prop_00 < 0.70) %>%
+  pull(intensity_label)
+# Young leaves (tree/shrub) - no.
+# Leaves - canopy fullness (%)
+# Leaves (sedges) - greeness (%)
+# Colored leaves - canopy color (%)
+# Fruits - no.
+# Ripe fruits (%)
+
+# Look at these intensity curves in turn
+intens <- intensities[6]
   
-  # intens <- intensity_cats$intensity_label[1]
   si_int <- filter(si, intensity_label == intens)
   spps <- unique(si_int$common_name)
   
-  # Is it a good idea to plot transformed values? Do we need to modify the axis
-  # labels?
+  # Remove observations where phenophase status is 1, but intensity value wasn't 
+  # provided (this creates breaks in plotted lines)
+  si_int <- filter(si_int, !is.na(intensity_midpoint))
+  
+  # Plot logged values for numeric intensity categories
   if (si_int$intensity_type[1] == "number") {
     si_int <- si_int %>%
       mutate(yaxis = intensity_midpoint_log)
@@ -327,12 +397,7 @@ for (intens in intensity_cats$intensity_label) {
   for (spp in spps) {
   
     si_int_spp <- filter(si_int, common_name == spp)
-    
-    # ggplot(filter(si_int_spp, yr == 2018), 
-    #        aes(x = day_of_year, y = intensity_midpoint)) +
-    #   geom_line() +
-    #   facet_wrap(vars(individual_id), scales = "free_y")
-      
+
     ylab <- ifelse(si_int$intensity_type[1] == "number",
                    paste0("log(", str_to_lower(si_int$intensity_label[1]), ")"),
                    si_int$intensity_label[1])
@@ -346,29 +411,62 @@ for (intens in intensity_cats$intensity_label) {
     
     print(ics)
   }
-}  
-    
-    
-    # Identify spp-intensity combos to exclude (because data are inconsistent/interrupted/poor quality)
-      # Remove 2020 @ DEJU (or other sites) since I think data collection was
-      # interrupted?
-      # No strong seasonal signal? (how would we assess)
-    
-    # Look for years where data collection started too late to capture onset
-    # or ended too early to capture end of phenophase
+  
+# Young leaves - no.
+  # velvet mesquite: 2016 didn't start till late, but other years look good with multiple humps
+  # desert zinnia: good, just often 1-1 to start/end; lots more plants in 2017-2019.
+  # creosote bush: 2016 didn't start till late, doesn't always have 0-0 to start-end
+  # mountain laurel: good
+  
+# Leaves - % canopy fullness
+  # velvet mesquite: good, but not 2016
+  # desert zinnia: good
+  # sugar maple: good
+  # forsythia: good
+  # dwarf birch: 2016 and 2020 started late, but other years look good
+  # quaking aspen: 2017 and 2020 started late, but other years look good
 
-    # Look for breaks in curves (see some of Ellen's plants) -- what's
-    # responsible for this?
+# Leaves (sedges) - % greenness
+  # Pennsylvania sedge: look good, just always has some green leaves
+  
+# Colored leaves - % canopy color 
+  # velvet mesquite: 2016 started late, otherwise ok. Always low %, and often not 0-0 start-end
+  # desert zinnia: 2016 started late, otherwise ok. Usually low % and often not 0-0 start-end
+  # sugar maple: good
+  # forsythia: good
+  # dwarf birch: 2016 late start (2020 did too, but didn't matter for this phenophase)
+  # quaking aspen: good. late start in 2017 and 2020 never mattered. 
+  
+# Fruits - no. ##### most questionable #####
+  # velvet mesquite: 1 plant, 1 year so no help.
+  # creosote bush: 6 plants & 1 year. Not sure these curves are helpful ########
+  # sugar maple: 2 plants, 3 years. ok
+  # mountain laurel: 1 plant, 3 years. Not sure these curves are helpful since
+    # 2 end year with fruits and aren't monitored for long time after
+  # Virginia strawberry: 1 plant, 3 years. good
+  
+# Ripe fruit % ##### most questionable #####
+  # creosote bush: 6 plants, 1 year. Not sure it's helpful, ends at 1 but starts late at 0
+  # sugar maple: 2 plants, 2 years. ok
+  # mountain laurel: 1 plant, 1 year, ends at 1. no help
+  # Virginia strawberry: 1 plant, 1 year so no help
+  # Pennsylvania sedge: 1 plant, 3 years. good ##### exception?
 
-    # Look for long straight lines that would indicate a monitoring break...
-    # Maybe better to elimate plant-phenophase-years where max interval is > X
-    
-    
-# }
+# UPSHOT: 
+# So maybe exclude the fruit phenophases for now?  Very little data to go on and 
+# the patterns are more difficult to parse out
+  
+# NEON sites had some years where monitoring started late (but note that this 
+# may not matter for phenophases that occur later in the year)
+  # BONA [quaking aspen]: 2017 and 2020 
+  # DEJU [dwarf birch]: 2016 and 2020
+  # SRER [velvet mesquite, creosote bush, desert zinnia]: 2016
+  
+# Use a rule to exclude any species-phenophase combination where there's only one 
+# plant-year of data (in case there are any beyond those in the fruit categories)
+```
 
-
-
-
+```{r GAMs}
 
 
 ```
@@ -376,19 +474,9 @@ for (intens in intensity_cats$intensity_label) {
 ```{r status-intensity-curves}
 
 
-
-
-
-
-
 ```
 
 ```{r derived-metrics}
-
-
-
-
-
 
 
 ```

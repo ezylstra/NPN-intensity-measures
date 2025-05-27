@@ -24,6 +24,8 @@ library(lubridate)
 library(ggplot2)
 library(cowplot)
 library(kableExtra)
+library(mgcv)
+library(visreg)
 ```
 
 ## Overview
@@ -130,8 +132,8 @@ pl_ph_yr <- si %>%
   # remove plant-php-year combos with no observations with intensity values
   # remove plant-php-year combos with < 5 observations
   # remove plant-php-year combos when max interval > 14 days
-  # (using 14-day max interval cutoff rather than mean interval mostly removes
-  # no. years for Ellen's plants; most now 3-4 years)
+    # (using 14-day max interval cutoff rather than mean interval mostly removes
+    # no. years for Ellen's plants; most now 3-4 years)
 
 # Side note: Checked that individual_id's for plants at NEON sites weren't 
 # changing annually like the site_id's do. Luckily, that doesn't seem to be the 
@@ -225,19 +227,6 @@ site_spp_ph <- si %>%
   mutate(obs_per_yr = round(n_obs / n_yrs, 1)) %>%
   relocate(obs_per_yr, .after = "n_obs") %>%
   data.frame()
-
-# # Site-plant-phenophase-year summary (for filtered observations)
-# si_keep <- si %>%
-#   distinct(individual_id, phenophase_description, yr) %>%
-#   mutate(keep = 1)
-# pl_ph_yr <- pl_ph_yr %>%
-#   left_join(si_keep, by = c("individual_id", "phenophase_description", "yr")) %>%
-#   filter(!is.na(keep)) %>%
-#   select(-c(keep, remove))
-# 
-# # Proportion of plant-phenophase-years when all positive phenophase observations
-# # had an intensity value
-# sum(pl_ph_yr$prop_intvalue == 1) / nrow(pl_ph_yr) # >0.99
 ```
 
 ```{r tbl-site-spp}
@@ -355,10 +344,10 @@ pl_ph_yr %>%
 # Simpler...
 php_summary <- pl_ph_yr %>%
   group_by(class_id, phenophase_description, intensity_label) %>%
-  summarize(n = n(),
+  summarize(n_plantyrs = n(),
             n_states_mn = round(mean(n_states), 2),
             n_states_max = max(n_states),
-            prop_00 = round(sum(first_status == 0 & last_status == 0) / n, 2),
+            prop_00 = round(sum(first_status == 0 & last_status == 0) / n_plantyrs, 2),
             .groups = "keep") %>%
   data.frame()
 
@@ -376,41 +365,41 @@ intensities <- php_summary %>%
 # Ripe fruits (%)
 
 # Look at these intensity curves in turn
-intens <- intensities[6]
-  
-  si_int <- filter(si, intensity_label == intens)
-  spps <- unique(si_int$common_name)
-  
-  # Remove observations where phenophase status is 1, but intensity value wasn't 
-  # provided (this creates breaks in plotted lines)
-  si_int <- filter(si_int, !is.na(intensity_midpoint))
-  
-  # Plot logged values for numeric intensity categories
-  if (si_int$intensity_type[1] == "number") {
-    si_int <- si_int %>%
-      mutate(yaxis = intensity_midpoint_log)
-  } else {
-    si_int <- si_int %>%
-      mutate(yaxis = intensity_midpoint)
-  }
-
-  for (spp in spps) {
-  
-    si_int_spp <- filter(si_int, common_name == spp)
-
-    ylab <- ifelse(si_int$intensity_type[1] == "number",
-                   paste0("log(", str_to_lower(si_int$intensity_label[1]), ")"),
-                   si_int$intensity_label[1])
-    
-    ics <- ggplot(si_int_spp, aes(x = day_of_year, y = yaxis)) +
-      geom_line(aes(color = factor(individual_id))) +
-      facet_grid(yr ~ .) +
-      theme(legend.position = "none") +
-      labs(title = paste0(str_to_sentence(spp), ",  ", intens),
-           y = ylab, x = "Day of year")
-    
-    print(ics)
-  }
+# intens <- intensities[6]
+#   
+#   si_int <- filter(si, intensity_label == intens)
+#   spps <- unique(si_int$common_name)
+#   
+#   # Remove observations where phenophase status is 1, but intensity value wasn't 
+#   # provided (this creates breaks in plotted lines)
+#   si_int <- filter(si_int, !is.na(intensity_midpoint))
+#   
+#   # Plot logged values for numeric intensity categories
+#   if (si_int$intensity_type[1] == "number") {
+#     si_int <- si_int %>%
+#       mutate(yaxis = intensity_midpoint_log)
+#   } else {
+#     si_int <- si_int %>%
+#       mutate(yaxis = intensity_midpoint)
+#   }
+# 
+#   for (spp in spps) {
+#   
+#     si_int_spp <- filter(si_int, common_name == spp)
+# 
+#     ylab <- ifelse(si_int$intensity_type[1] == "number",
+#                    paste0("log(", str_to_lower(si_int$intensity_label[1]), ")"),
+#                    si_int$intensity_label[1])
+#     
+#     ics <- ggplot(si_int_spp, aes(x = day_of_year, y = yaxis)) +
+#       geom_line(aes(color = factor(individual_id))) +
+#       facet_grid(yr ~ .) +
+#       theme(legend.position = "none") +
+#       labs(title = paste0(str_to_sentence(spp), ",  ", intens),
+#            y = ylab, x = "Day of year")
+#     
+#     print(ics)
+#   }
   
 # Young leaves - no.
   # velvet mesquite: 2016 didn't start till late, but other years look good with multiple humps
@@ -462,11 +451,87 @@ intens <- intensities[6]
   # DEJU [dwarf birch]: 2016 and 2020
   # SRER [velvet mesquite, creosote bush, desert zinnia]: 2016
   
+si <- si %>%
+  filter(!(site == "bona" & yr %in% c(2017, 2020))) %>%
+  filter(!(site == "deju" & yr %in% c(2016, 2020))) %>%
+  filter(!(site == "srer" & yr == 2016))
+ 
 # Use a rule to exclude any species-phenophase combination where there's only one 
 # plant-year of data (in case there are any beyond those in the fruit categories)
+si <- si %>%
+  group_by(common_name, phenophase_description) %>%
+  mutate(n_plants = n_distinct(individual_id),
+         n_yrs = n_distinct(yr)) %>%
+  ungroup() %>%
+  filter(n_plants * n_yrs > 1) %>%
+  select(-c(n_plants, n_yrs)) %>%
+  data.frame()
 ```
 
 ```{r GAMs}
+
+gamdf <- si %>%
+  filter(!phenophase_description %in% c("Fruits", "Ripe fruits")) %>%
+  arrange(class_id, phenophase_description, site, common_name, individual_id, 
+          observation_date)
+
+combos <- distinct(gamdf, intensity_label, intensity_type, common_name)
+
+# for (i in 1:nrow(combos)) {
+i = 1
+intdf <- gamdf %>%
+  filter(intensity_label == combos$intensity_label[i],
+         common_name == combos$common_name[i])
+
+intdf <- intdf %>%
+  mutate(Time = as.numeric(as.Date(observation_date))) %>%
+  mutate(TimeC = Time - median(Time))
+
+intdf1 <- intdf %>%
+  filter(individual_id == 361264)
+
+# GAM fit to one plant's data
+trend1 <- gam(intensity_midpoint_log ~ s(day_of_year, bs = "cc", k = 20) + s(TimeC),
+              data = intdf1)
+notrend1 <- gam(intensity_midpoint_log ~ s(day_of_year, bs = "cc", k = 20),
+                data = intdf1)
+
+summary(trend1)
+summary(notrend1)
+
+layout(matrix(1:2, ncol = 2))
+plot(trend1)
+layout(matrix(1:1, ncol = 1))
+plot(notrend1)
+# Trend really doesn't matter much
+
+# GAM fit to multiple plants' data
+intdf$individual_id <- factor(intdf$individual_id)
+intdf$yr <- factor(intdf$yr)
+# Fit different curve each year, intercepts vary among plants
+m1 <- gam(intensity_midpoint_log ~ 
+            individual_id + yr + s(day_of_year, bs = "cc", k = 10, by = yr),
+          knots = list(day_of_year = c(105, 277)), 
+          method = "REML", data = intdf)
+summary(m1)
+
+visreg(m1, xvar = "day_of_year",
+       by = "yr", data = intdf,
+       method = "REML")
+
+# Predictions extend curve below values that are known minimums. Not sure how
+# to avoid this, but could look into:
+  # only make predictions between min/max date in each year
+  # adaptive smooths
+  # different smoothing functions
+  # tried m = 1 (adjusting the penalty), but that didn't help.
+  # tried setting boundary knots, but that doesn't seem to work either...
+  
+# Need to look at code I created previously for TTR and Flowers for Bats 
+
+
+# }
+
 
 
 ```

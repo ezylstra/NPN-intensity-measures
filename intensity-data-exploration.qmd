@@ -25,7 +25,8 @@ library(ggplot2)
 library(cowplot)
 library(kableExtra)
 library(mgcv)
-library(visreg)
+# library(visreg)
+library(marginaleffects)
 ```
 
 ## Overview
@@ -470,12 +471,28 @@ si <- si %>%
 
 ```{r GAMs}
 
+# Helpful GAM references:
+# https://fromthebottomoftheheap.net/2014/05/09/modelling-seasonal-data-with-gam
+# https://m-clark.github.io/generalized-additive-models/
+# https://stats.stackexchange.com/questions/552880/by-group-random-effect-gam
+# Canizares et al. 2023 (example with cc smooths)
+
+# Remove phenophases/intensity categories that we won't explore (at least right away)
 gamdf <- si %>%
   filter(!phenophase_description %in% c("Fruits", "Ripe fruits")) %>%
   arrange(class_id, phenophase_description, site, common_name, individual_id, 
           observation_date)
 
+# Set response variable (log numeric values, keep percentages):
+gamdf <- gamdf %>%
+  mutate(resp = ifelse(intensity_type == "number",
+                       intensity_midpoint_log,
+                       intensity_midpoint))
+
+# List of species-intensity category combianations
 combos <- distinct(gamdf, intensity_label, intensity_type, common_name)
+
+# Loop through species/intensities, fitting GAMs, ....
 
 # for (i in 1:nrow(combos)) {
 i = 1
@@ -483,51 +500,147 @@ intdf <- gamdf %>%
   filter(intensity_label == combos$intensity_label[i],
          common_name == combos$common_name[i])
 
-intdf <- intdf %>%
-  mutate(Time = as.numeric(as.Date(observation_date))) %>%
-  mutate(TimeC = Time - median(Time))
-
-intdf1 <- intdf %>%
-  filter(individual_id == 361264)
-
-# GAM fit to one plant's data
-trend1 <- gam(intensity_midpoint_log ~ s(day_of_year, bs = "cc", k = 20) + s(TimeC),
-              data = intdf1)
-notrend1 <- gam(intensity_midpoint_log ~ s(day_of_year, bs = "cc", k = 20),
-                data = intdf1)
-
-summary(trend1)
-summary(notrend1)
-
-layout(matrix(1:2, ncol = 2))
-plot(trend1)
-layout(matrix(1:1, ncol = 1))
-plot(notrend1)
-# Trend really doesn't matter much
-
-# GAM fit to multiple plants' data
 intdf$individual_id <- factor(intdf$individual_id)
-intdf$yr <- factor(intdf$yr)
-# Fit different curve each year, intercepts vary among plants
-m1 <- gam(intensity_midpoint_log ~ 
-            individual_id + yr + s(day_of_year, bs = "cc", k = 10, by = yr),
-          knots = list(day_of_year = c(105, 277)), 
+intdf$fyr <- factor(intdf$yr)
+# intdf$indyr <- factor(paste0(intdf$individual_id, "_", intdf$yr))
+
+# Logical indicating whether to use a cyclic smooth (when observation date
+# range starts in first two weeks of the year and ends in the last two weeks)
+cubic_bs <- ifelse(min(intdf$day_of_year) <= 14 & max(intdf$day_of_year >= (365 - 14)),
+                   "cc", "cr")
+
+# Fit same smooth each year, random intercepts for individual plants without 
+# any accounting for year (and many plants monitored in multiple years)
+  # m0 <- gam(resp ~ s(day_of_year, bs = "cc", k = 20) +  s(individual_id, bs = "re"),
+  #           method = "REML", data = intdf)
+  # summary(m0)
+# I'm not sure this is valid given that we're interested in plant-specific
+# annual curves. If year isn't in the model anywhere then we're creating one
+# curve for each plant by combining data across years, which seems wrong.
+
+# Fit same smooth each year, with random intercepts for each plant-year combo
+m1 <- gam(resp ~ s(day_of_year, bs = cubic_bs, k = 20) +  
+            s(individual_id, fyr, bs = "re"),
           method = "REML", data = intdf)
 summary(m1)
 
-visreg(m1, xvar = "day_of_year",
-       by = "yr", data = intdf,
-       method = "REML")
+  # Get names of smooth terms
+  sapply(m1$smooth, "[[", "label")
+  #  "s(day_of_year)"       "s(individual_id,fyr)" 
 
-# Predictions extend curve below values that are known minimums. Not sure how
-# to avoid this, but could look into:
-  # only make predictions between min/max date in each year
-  # adaptive smooths
-  # different smoothing functions
-  # tried m = 1 (adjusting the penalty), but that didn't help.
-  # tried setting boundary knots, but that doesn't seem to work either...
+  # Make predictions using mgcv::predict.gam()
+  # see: https://stackoverflow.com/questions/51634953/gam-with-gp-smoother-predict-at-new-locations/51635487#51635487
+  m1_new <- data.frame(day_of_year = min(intdf$day_of_year):max(intdf$day_of_year),
+                       individual_id = intdf$individual_id[1], 
+                       fyr = 2018) # checked that I can feed any values here (but get warning if not in orig dataset)
+  m1_p <- predict(m1, newdata = m1_new, type = "terms", 
+                  terms = "s(day_of_year)", se.fit = TRUE)
   
-# Need to look at code I created previously for TTR and Flowers for Bats 
+  # Simplify to dataframe and calculate CI
+  m1_preds <- data.frame(day_of_year = m1_new$day_of_year,
+                         fit = attr(m1_p, "constant") + rowSums(m1_p$fit),
+                         se.fit = rowSums(m1_p$se.fit)) %>%
+    mutate(lcl = fit - 1.96 * se.fit,
+           ucl = fit + 1.96 * se.fit)
+
+  # Create and ggplot object
+  m1_plot <- ggplot() +
+    geom_point(data = intdf, aes(x = day_of_year, y = resp), shape = 19, color = "gray") +
+    geom_ribbon(data = m1_preds, aes(x = day_of_year, ymin = lcl, ymax = ucl), 
+                fill = "#a1d99b", alpha = 0.5) +
+    geom_line(data = m1_preds, aes(x = day_of_year, y = fit)) +
+    labs(x = "Day of year", 
+         y = paste0("log(", combos[i, 1], ")"),
+         title = paste0(intdf$intensity_label[1], ", ", intdf$common_name[1], 
+                        " (", length(unique(intdf$individual_id)), " plants; ", 
+                        length(unique(intdf$yr)), " years)")) +
+    theme_bw()
+  m1_plot  
+
+  # Using marginaleffects package to get predictions
+  m1_preds_me <- predictions(m1,
+                  newdata = data.frame(
+                    day_of_year = min(intdf$day_of_year):max(intdf$day_of_year),
+                    individual_id = intdf$individual_id[500],
+                    fyr = 2021),
+                  exclude = "s(individual_id,fyr)") 
+  # Confirmed that I can change individual_id and fyr and get same results
+  # Confirmed that results are almost identical to that from predict.gam (CIs 
+  # slightly different)
+
+# Fit different smooths each year (fixed effects), with random intercepts for 
+# individual plants.
+m2 <- gam(resp ~ fyr + 
+            s(day_of_year, by = fyr, bs = cubic_bs, k = 20) +
+            s(individual_id, bs = "re"),
+          method = "REML", data = intdf)
+summary(m2)
+
+  # Get names of smooth terms
+  (m2_terms <- sapply(m2$smooth, "[[", "label"))
+  #  "s(day_of_year):fyr2018" "s(day_of_year):fyr2019" "s(day_of_year):fyr2021" 
+  #  "s(day_of_year):fyr2022" "s(individual_id)"   
+
+  # Make predictions using mgcv::predict.gam()
+  # Create a dataframe to hold predictions from more complex model
+  # m2_new <- data.frame(fyr = NA, day_of_year = NA)
+  for (yr in sort(unique(intdf$yr))) {
+    min_doy <- min(intdf$day_of_year[intdf$fyr == yr])
+    max_doy <- max(intdf$day_of_year[intdf$fyr == yr])
+    doys <- seq(min_doy, max_doy)
+    if (yr == min(intdf$yr)) {
+      m2_new <- data.frame(fyr = yr, day_of_year = doys)
+    } else {
+      m2_new <- rbind(m2_new, data.frame(fyr = yr, day_of_year = doys))
+    }
+  }
+  m2_new$individual_id <- intdf$individual_id[1]
+  
+  m2_p <- predict(m2, newdata = m2_new, type = "terms", 
+                  exclude = m2_terms[length(m2_terms)], se.fit = TRUE)
+  
+  # Simplify to dataframe and calculate CI
+  m2_preds <- data.frame(fyr = m2_new$fyr,
+                         day_of_year = m2_new$day_of_year,
+                         fit = attr(m2_p, "constant") + rowSums(m2_p$fit),
+                         se.fit = rowSums(m2_p$se.fit)) %>%
+    mutate(lcl = fit - 1.96 * se.fit,
+           ucl = fit + 1.96 * se.fit)
+  m2_preds$fyr <- factor(m2_preds$fyr)
+
+  # Create and ggplot object
+  m2_plot <- ggplot(data = m2_preds,
+                    aes(x = day_of_year, group = fyr, color = fyr, fill = fyr)) +
+    geom_point(data = intdf, aes(x = day_of_year, y = resp, group = NULL), 
+               shape = 19, color = "gray", show.legend = FALSE) +
+    # geom_ribbon(data = m2_preds, aes(ymin = lcl, ymax = ucl), 
+    #             linewidth = 0, alpha = 0.3) +
+    geom_line(data = m2_preds, aes(x = day_of_year, y = fit, group = fyr)) +
+    labs(x = "Day of year", 
+         y = paste0("log(", combos[i, 1], ")"),
+         title = paste0(intdf$intensity_label[1], ", ", intdf$common_name[1], 
+                        " (", length(unique(intdf$individual_id)), " plants; ", 
+                        length(unique(intdf$yr)), " years)"),
+         # fill = "Year",
+         color = "Year") +
+    theme_bw()
+  m2_plot  
+
+  # Using marginaleffects package to get predictions
+  m2_preds_me <- predictions(m2, newdata = m2_new, exclude = "s(individual_id)") 
+  # CI are somewhat narrower here than when I calculated them using predict.gam
+
+
+# Compare AIC values
+AIC(m1, m2)
+
+# Fit individual smooths for each year and plant? Hangs up indefinitely....
+# https://stackoverflow.com/questions/68659805/mgcv-gam-more-than-one-variable-in-by-argument-smooth-varying-by-more-than-1
+  # m3 <- gam(intensity_midpoint_log ~ fyr + individual_id +
+  #             s(day_of_year, by = interaction(fyr, individual_id), bs = "cr", k = 20),
+  #           method = "REML", data = intdf)
+  # summary(m3)
+
 
 
 # }

@@ -3,3 +3,6 @@
 .RData
 .Ruserdata
 
+/output/**
+!/output/**/
+!/output/**/.gitkeep

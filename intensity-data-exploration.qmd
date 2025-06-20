@@ -22,7 +22,7 @@ library(dplyr)
 library(stringr)
 library(lubridate)
 library(ggplot2)
-# library(cowplot)
+library(cowplot)
 library(kableExtra)
 library(mgcv)
 # library(brms)
@@ -46,10 +46,10 @@ We filtered the data by removing plant-year-phenophase combinations when:
 Other filtering steps:
 
 -   excluded any species-phenophase combinations that were only represented by a single plant in a single year.
--   excluded intensity categories that were represented by a single intensity value
+-   excluded intensity categories that were represented by only 1-2 intensity values
 -   exluded intensity categories that had fewer than 50 observations across species, plants, and years
 
-Intensities are reported in value ranges (e.g., 3-10 flowers; 25-49% open flowers). For analysis, we represented each intensity value by the approximate midpoint of the reported range (e.g., 5 flowers, 37% open flowers).
+Intensities are reported in value ranges (e.g., 3-10 flowers; 25-49% open flowers). For analysis, we represented each intensity value by the approximate midpoint of the reported range (e.g., 5 flowers, 37% open flowers, respectively).
 
 ```{r setup}
 
@@ -80,7 +80,8 @@ for (site in sites) {
   si <- si[!duplicated(si),]
   
   # Occasionally there are two records for a plant-phenophase in one day with 
-  # different intensity or status values. Removing these observations too.
+  # different intensity or status values. Removing these observations too (not
+  # trying to resolve conflicts, just deleting all observations).
   si <- si %>%
     group_by(individual_id, phenophase_id, observation_date) %>%
     mutate(n_obs = n()) %>%
@@ -150,8 +151,9 @@ pl_ph_yr <- si %>%
   # remove plant-php-year combos with no observations with intensity values
   # remove plant-php-year combos with < 5 observations
   # remove plant-php-year combos when max interval > 14 days
-    # (using 14-day max interval cutoff rather than mean interval mostly removes
-    # no. years for Ellen's plants; most now 3-4 years)
+    # (using 14-day max interval cutoff rather than mean interval doesn't remove
+    # species/plants from dataset but reduces the number of years for some
+    # plants at Ellen's site; most now 3-4 years)
 
 # Side note: Checked that individual_id's for plants at NEON sites weren't 
 # changing annually like the site_id's do. Luckily, that doesn't seem to be the 
@@ -189,7 +191,7 @@ si <- si %>%
   left_join(spil, by = c("common_name", "phenophase_description"))
 ```
 
-```{r summarize-data}
+```{r summarize-si-data}
 
 # Site-species summaries
 site_spp <- si %>%
@@ -265,7 +267,7 @@ site_spp_t <- site_spp %>%
 site_spp_t
 ```
 
-```{r exclude-some-intensity-cats}
+```{r summarize-intensity-cats}
 
 # Create table summarizing amount of information per intensity category
 intensity_cats <- si %>%
@@ -275,15 +277,19 @@ intensity_cats <- si %>%
             n_plants = n_distinct(individual_id),
             n_yrs = n_distinct(yr),
             values = paste(sort(unique(intensity_midpoint)), collapse = ", "),
+            valuesq = paste(sort(unique(intensity_value)), collapse = ", "),
             .groups = "keep") %>%
+  mutate(unique_values = ifelse(intensity_type == "qualitative", 
+                                valuesq, values)) %>%
+  select(-c(values, valuesq)) %>%
   data.frame()
 
 # Identify categories that we want to exclude because:
-  # Only one intensity value represented in dataset
+  # Only one or two intensity values represented in dataset
   # Fewer than 50 observations across species, plants, and years
 intensity_cats <- intensity_cats %>%
   mutate(exclude = case_when(
-    str_detect(values, ", ", negate = TRUE) ~ 1, 
+    str_count(unique_values, ",") < 2 ~ 1,
     n < 50 ~ 1, 
     .default = 0
   ))
@@ -297,6 +303,30 @@ si <- si %>%
 intensity_cats <- intensity_cats %>%
   filter(exclude == 0) %>%
   select(-exclude)
+
+# Create column with logged intensity values (for plotting)
+si <- si %>%
+  mutate(intensity_midpoint_log = ifelse(intensity_midpoint == 0,
+                                         log(intensity_midpoint + 0.01), 
+                                         log(intensity_midpoint)))
+
+# Create short name for intensity categories
+intensity_cats <- intensity_cats %>%
+  mutate(intensity_short = case_when(
+    intensity_label == "No. breaking leaf buds" ~ "BreakingLeafBuds",
+    intensity_label == "Leaf size (%)" ~ "LeafSize",
+    intensity_label == "No. young leaves" ~ "YoungLeaves",
+    intensity_label == "Leaf canopy fullness (%)" ~ "CanopyFullness",
+    intensity_label == "Plant greeness (%)" ~ "Greenness",
+    intensity_label == "Leaf canopy color (%)" ~ "CanopyColor",
+    intensity_label == "No. flower heads" ~ "FlowerHeads",
+    intensity_label == "No. flowers and flower buds" ~ "Flowers",
+    intensity_label == "Open flowers (%)" ~ "OpenFlowers",
+    intensity_label == "No. fruits" ~ "Fruits",
+    intensity_label == "Ripe fruit (%)" ~ "Ripe fruit",
+    intensity_label == "No. fruit/seed drop" ~ "FruitDrop",
+    .default = NA
+  ))
 
 # Summarize data available for each plant, phenophase, and year (in part
 # to figure out what data to include in GAMs). Recreating pl_ph_yr...
@@ -353,131 +383,99 @@ pl_ph_yr <- si %>%
 #             prop_00 = round(sum(first_status == 0 & last_status == 0) / n, 2),
 #             .groups = "keep") %>%
 #   data.frame()
-# Simpler...
+
+# Simpler summary across phenophases
 php_summary <- pl_ph_yr %>%
   group_by(class_id, phenophase_description, intensity_label) %>%
-  summarize(n_plantyrs = n(),
+  summarize(n_spp = n_distinct(common_name),
+            n_plantyrs = n(),
             n_states_mn = round(mean(n_states), 2),
             n_states_max = max(n_states),
             prop_00 = round(sum(first_status == 0 & last_status == 0) / n_plantyrs, 2),
             .groups = "keep") %>%
   data.frame()
 
-# Look more closely at some phenophases, where mean number of status series
-# varies a lot from 3 (ideally 0-1-0) and the proportion of plant-php-yrs
-# that start and end out of phase is << 1
-intensities <- php_summary %>%
-  filter(prop_00 < 0.70) %>%
-  pull(intensity_label)
-# Young leaves (tree/shrub) - no.
-# Leaves - canopy fullness (%)
-# Leaves (sedges) - greeness (%)
-# Colored leaves - canopy color (%)
-# Fruits - no.
-# Ripe fruits (%)
+```
 
-# Look at these intensity curves in turn
-# intens <- intensities[6]
-#   
-#   si_int <- filter(si, intensity_label == intens)
-#   spps <- unique(si_int$common_name)
-#   
-#   # Remove observations where phenophase status is 1, but intensity value wasn't 
-#   # provided (this creates breaks in plotted lines)
-#   si_int <- filter(si_int, !is.na(intensity_midpoint))
-#   
-#   # Plot logged values for numeric intensity categories
-#   if (si_int$intensity_type[1] == "number") {
-#     si_int <- si_int %>%
-#       mutate(yaxis = intensity_midpoint_log)
-#   } else {
-#     si_int <- si_int %>%
-#       mutate(yaxis = intensity_midpoint)
-#   }
-# 
-#   for (spp in spps) {
-#   
-#     si_int_spp <- filter(si_int, common_name == spp)
-# 
-#     ylab <- ifelse(si_int$intensity_type[1] == "number",
-#                    paste0("log(", str_to_lower(si_int$intensity_label[1]), ")"),
-#                    si_int$intensity_label[1])
-#     
-#     ics <- ggplot(si_int_spp, aes(x = day_of_year, y = yaxis)) +
-#       geom_line(aes(color = factor(individual_id))) +
-#       facet_grid(yr ~ .) +
-#       theme(legend.position = "none") +
-#       labs(title = paste0(str_to_sentence(spp), ",  ", intens),
-#            y = ylab, x = "Day of year")
-#     
-#     print(ics)
-#   }
-  
-# Young leaves - no.
-  # velvet mesquite: 2016 didn't start till late, but other years look good with multiple humps
-  # desert zinnia: good, just often 1-1 to start/end; lots more plants in 2017-2019.
-  # creosote bush: 2016 didn't start till late, doesn't always have 0-0 to start-end
-  # mountain laurel: good
-  
-# Leaves - % canopy fullness
-  # velvet mesquite: good, but not 2016
-  # desert zinnia: good
-  # sugar maple: good
-  # forsythia: good
-  # dwarf birch: 2016 and 2020 started late, but other years look good
-  # quaking aspen: 2017 and 2020 started late, but other years look good
+```{r plot-raw-intensity-data}
 
-# Leaves (sedges) - % greenness
-  # Pennsylvania sedge: look good, just always has some green leaves
-  
-# Colored leaves - % canopy color 
-  # velvet mesquite: 2016 started late, otherwise ok. Always low %, and often not 0-0 start-end
-  # desert zinnia: 2016 started late, otherwise ok. Usually low % and often not 0-0 start-end
-  # sugar maple: good
-  # forsythia: good
-  # dwarf birch: 2016 late start (2020 did too, but didn't matter for this phenophase)
-  # quaking aspen: good. late start in 2017 and 2020 never mattered. 
-  
-# Fruits - no. ##### most questionable #####
-  # velvet mesquite: 1 plant, 1 year so no help.
-  # creosote bush: 6 plants & 1 year. Not sure these curves are helpful ########
-  # sugar maple: 2 plants, 3 years. ok
-  # mountain laurel: 1 plant, 3 years. Not sure these curves are helpful since
-    # 2 end year with fruits and aren't monitored for long time after
-  # Virginia strawberry: 1 plant, 3 years. good
-  
-# Ripe fruit % ##### most questionable #####
-  # creosote bush: 6 plants, 1 year. Not sure it's helpful, ends at 1 but starts late at 0
-  # sugar maple: 2 plants, 2 years. ok
-  # mountain laurel: 1 plant, 1 year, ends at 1. no help
-  # Virginia strawberry: 1 plant, 1 year so no help
-  # Pennsylvania sedge: 1 plant, 3 years. good ##### exception?
-
-# UPSHOT: 
-# So maybe exclude the fruit phenophases for now?  Very little data to go on and 
-# the patterns are more difficult to parse out
-  
-# NEON sites had some years where monitoring started late (but note that this 
-# may not matter for phenophases that occur later in the year)
-  # BONA [quaking aspen]: 2017 and 2020 
-  # DEJU [dwarf birch]: 2016 and 2020
-  # SRER [velvet mesquite, creosote bush, desert zinnia]: 2016
-  
-si <- si %>%
-  filter(!(site == "bona" & yr %in% c(2017, 2020))) %>%
-  filter(!(site == "deju" & yr %in% c(2016, 2020))) %>%
-  filter(!(site == "srer" & yr == 2016))
- 
-# Use a rule to exclude any species-phenophase combination where there's only one 
-# plant-year of data (in case there are any beyond those in the fruit categories)
-si <- si %>%
-  group_by(common_name, phenophase_description) %>%
-  mutate(n_plants = n_distinct(individual_id),
-         n_yrs = n_distinct(yr)) %>%
-  ungroup() %>%
-  filter(n_plants * n_yrs > 1) %>%
-  select(-c(n_plants, n_yrs)) %>%
+# Identify the min/max number of plants per species, intensity category, and 
+# year to keep point size consistent among plots
+nplants_size <- si %>%
+  group_by(intensity_label, common_name, yr) %>%
+  summarize(n_plants = n_distinct(individual_id), .groups = "keep") %>%
   data.frame()
+
+for (i in 1:nrow(intensity_cats)) {
+
+  si_int <- filter(si, intensity_label == intensity_cats$intensity_label[i])
+  spps <- unique(si_int$common_name)
+
+  # Remove observations where phenophase status is 1, but intensity value wasn't
+  # provided (this creates breaks in plotted lines)
+  si_int <- filter(si_int, !is.na(intensity_midpoint))
+
+  # Plot logged values for numeric intensity categories
+  if (si_int$intensity_type[1] == "number") {
+    si_int <- si_int %>%
+      mutate(yaxis = intensity_midpoint_log)
+  } else {
+    si_int <- si_int %>%
+      mutate(yaxis = intensity_midpoint)
+  }
+
+  for (spp in spps) {
+    
+    # Create filename for png
+    spp_nospace <- str_replace_all(spp, " ", "_")
+    png_name <- paste0("output/intensities-by-spp-php-yr/intensities-",
+                       intensity_cats$intensity_short[i], "-", spp_nospace, 
+                       ".png")
+    
+    # Create ggplot object and save to file (if file doesn't already exist)
+    if (!file.exists(png_name)) {
+
+      si_int_spp <- filter(si_int, common_name == spp)
+  
+      ylab <- ifelse(si_int$intensity_type[1] == "number",
+                     paste0("log(", str_to_lower(si_int$intensity_label[1]), ")"),
+                     si_int$intensity_label[1])
+      
+      # Figures with lines connecting intensity measures for each individual
+      # iplot <- ggplot(si_int_spp, aes(x = day_of_year, y = yaxis)) +
+      #   geom_line(aes(color = factor(individual_id))) +
+      #   facet_grid(yr ~ .) +
+      #   theme(legend.position = "none") +
+      #   labs(title = paste0(str_to_sentence(spp), ",  ", intensity_cats$intensity_label[i]),
+      #        y = ylab, x = "Day of year")
+      
+      # Figures with lines and points, with size proportional to no. of plants 
+      agg <- si_int_spp %>%
+        group_by(yr, day_of_year, yaxis) %>%
+        summarize(n_indiv = n(), .groups = "keep") %>%
+        data.frame()
+
+      iplot <- ggplot(agg, aes(x = day_of_year, y = yaxis)) +
+        facet_grid(yr ~ .) +
+        geom_line(data = si_int_spp, show.legend = FALSE, alpha = 0.5,
+                  aes(x = day_of_year, y = yaxis, color = factor(individual_id))) +
+        geom_point(data = agg,
+                   aes(x = day_of_year, y = yaxis, size = n_indiv),
+                   shape = 16, alpha = 0.4) +
+        scale_size_continuous(limits = c(1, max(nplants_size$n_plants))) +
+        labs(title = paste0(str_to_sentence(spp), ",  ", intensity_cats$intensity_label[i]),
+             y = ylab, x = "Day of year") +
+        theme_bw()
+      iplot
+      
+      ggsave(png_name,
+             plot = iplot,
+             width = 6.5,
+             height = 9,
+             units = "in")
+    }
+  }
+}
 ```
 
 ```{r}
@@ -489,11 +487,12 @@ php_summary_t <- php_summary %>%
          n_transitions_max = n_states_max - 1) %>%
   select(-c(class_id, n_states_mn, n_states_max)) %>%
   relocate(prop_00, .after = "n_transitions_max") %>%
-  kbl(col.names = c("Phenophase", "Intensity category", "No. plant-years", 
+  kbl(col.names = c("Phenophase", "Intensity category", 
+                    "No. species", "No. plant-years", 
                     "Mean no. status transitions per yr", 
                     "Max. no. status transitions per yr", 
                     "Prop. of plant-years that start and end out of phase"),
-      align = c(rep("r", 2), rep("c", 4))) %>%
+      align = c(rep("r", 2), rep("c", 5))) %>%
   kable_styling(full_width = FALSE, font_size = 11)
 php_summary_t
 ```
@@ -502,19 +501,53 @@ php_summary_t
 
 We wanted to model how phenophase intensity changes over the course of a season for various plant species and phenophases. Given that patterns are often more complex that that described by a simple linear or quadratic model, we used generalized additive models (GAMs) for this task.
 
-One challenge in modeling these data is that intensity values (or intensity category midpoints) are not normally distributed. For numeric intensity categories (e.g., the number of breaking leaf buds or flowers), values can range from 0 (when the plant is not in the associated phenophase) to \>10,000, and the midpoints are not evenly distributed across that range. For example, the observed number of flowers on a plant can take one of the following values: 0, 1, 5, 50, 500, 5000, or 10,000 (each value is the approximate midpoint of a range). For percentage intensity categories (e.g., leaf canopy fullness or the % of flowers that are open), values are bounded by 0 and 100, or 0 and 1 if converted to proportions.
+One challenge in modeling these data is that intensity values (or intensity category midpoints) are not normally distributed. For numeric intensity categories (e.g., the number of breaking leaf buds or flowers), values can range from 0 (when the plant is not in the associated phenophase) to \>10,000, and the midpoints are not evenly distributed across that range. For example, the observed number of flowers on a plant can take one of the following values: 0, 1, 5, 50, 500, 5000, or 10,000 (each value is the approximate midpoint of a range). For percentage intensity categories (e.g., leaf canopy fullness or the % of flowers that are open), values are bounded by 0 and 100.
 
-Need to rework the stuff below: We used the `mgcv` package in R to contruct GAM models. While the `gam()` function in this package allows the user to specifiy a non-Gaussian distribution and link function when fitting a model, alternative distributions were not suitable given the structure of our data. A Poisson distribution did not provide a good fit for our numeric data because non-zero values were infrequent and took only a few unique values that differed by orders of magnitude. A beta distribution with a logit link did not provide a good fit for our proportional data because we had an abundance of zero values, which are not compatible with the beta distribution (support on (0,1) and not \[0,1\]). To fit a beta distribution, we were required to "nudge" values slightly above zero, which caused significant biases in predicted values (see <https://www.robertkubinec.com/post/limited_dvs/>). Given these obstacles, we elected to transform intensity values prior to fitting a model, which enabled us to use Gaussian distributions in GAMs. Specifically, for numeric intensity values, we added a small amount (0.01) to zero values and log-transformed the data; for percentage intensity values, we added a small amount (0.01) to zero values, divided by 100, and logit-transformed the data. For reporting and visualizations, we backtransformed predicted values to the original scale for easier interpretation.
+NEED TO REWORK!!!: We used the `mgcv` package in R to contruct GAM models. While the `gam()` function in this package allows the user to specifiy a non-Gaussian distribution and link function when fitting a model, alternative distributions were not suitable given the structure of our data. A Poisson distribution did not provide a good fit for our numeric data because non-zero values were infrequent and took only a few unique values that differed by orders of magnitude. A beta distribution with a logit link did not provide a good fit for our proportional data because we had an abundance of zero values, which are not compatible with the beta distribution (support on (0,1) and not \[0,1\]). To fit a beta distribution, we were required to "nudge" values slightly above zero, which caused significant biases in predicted values (see <https://www.robertkubinec.com/post/limited_dvs/>). Given these obstacles, we elected to transform intensity values prior to fitting a model, which enabled us to use Gaussian distributions in GAMs. Specifically, for numeric intensity values, we added a small amount (0.01) to zero values and log-transformed the data; for percentage intensity values, we added a small amount (0.01) to zero values, divided by 100, and logit-transformed the data. For reporting and visualizations, we backtransformed predicted values to the original scale for easier interpretation.
 
 ```{r gam-data}
 
-# Remove phenophases/intensity categories that we won't explore (at least right away)
+# NEON sites had some years where monitoring started late (but note that this 
+# may not matter for phenophases that occur later in the year)
+  # BONA [quaking aspen]: 2017 and 2020 
+  # DEJU [dwarf birch]: 2016 and 2020
+  # SRER [velvet mesquite, creosote bush, desert zinnia]: 2016
+si <- si %>%
+  filter(!(site == "bona" & yr %in% c(2017, 2020))) %>%
+  filter(!(site == "deju" & yr %in% c(2016, 2020))) %>%
+  filter(!(site == "srer" & yr == 2016))
+ 
+# Use a rule to exclude any species-phenophase combination where there's only one 
+# year of data. For now, will keep the few combinations where we have one plant
+# observed over multiple years.
+si <- si %>%
+  group_by(common_name, phenophase_description) %>%
+  mutate(n_yrs = n_distinct(yr)) %>%
+  ungroup() %>%
+  filter(n_yrs > 1) %>%
+  select(-n_yrs) %>%
+  data.frame()
+
+# Sort data and remove any observations with missing intensity values
 gamdf <- si %>%
-  filter(!phenophase_description %in% c("Fruits", "Ripe fruits")) %>%
   arrange(class_id, phenophase_description, site, common_name, individual_id, 
           observation_date) %>%
-  # Remove any observations with missing intensity values
-  filter(!is.na(intensity_midpoint))
+  filter(!is.na(intensity_midpoint)) %>%
+  mutate(intensity_short = case_when(
+    intensity_label == "No. breaking leaf buds" ~ "BreakingLeafBuds",
+    intensity_label == "Leaf size (%)" ~ "LeafSize",
+    intensity_label == "No. young leaves" ~ "YoungLeaves",
+    intensity_label == "Leaf canopy fullness (%)" ~ "CanopyFullness",
+    intensity_label == "Plant greeness (%)" ~ "Greenness",
+    intensity_label == "Leaf canopy color (%)" ~ "CanopyColor",
+    intensity_label == "No. flower heads" ~ "FlowerHeads",
+    intensity_label == "No. flowers and flower buds" ~ "Flowers",
+    intensity_label == "Open flowers (%)" ~ "OpenFlowers",
+    intensity_label == "No. fruits" ~ "Fruits",
+    intensity_label == "Ripe fruit (%)" ~ "Ripe fruit",
+    intensity_label == "No. fruit/seed drop" ~ "FruitDrop",
+    .default = NA
+  ))
 
 # List of species-intensity category combinations
 combos <- gamdf %>%
@@ -525,6 +558,28 @@ combos <- gamdf %>%
             n_yrs = n_distinct(yr),
             .groups = "keep") %>%
   data.frame()
+
+# Create dataframe to hold estimates from GAM models:
+combos_u <- combos %>%
+  select(class_id, intensity_label, intensity_type, common_name, n_plants) %>%
+  mutate(yr = NA)
+gams <- gamdf %>%
+  group_by(class_id, intensity_label, intensity_type, common_name, yr) %>%
+  summarize(n_plants = n_distinct(individual_id),
+            .groups = "keep") %>%
+  data.frame() %>%
+  rbind(combos_u) %>%
+  arrange(class_id, common_name, yr) %>%
+  mutate(k = NA,
+         smooth = NA,
+         model = NA,
+         fyrs_p = NA,
+         aic = NA,
+         devexpl = NA,
+         kcheck = NA,
+         peak_date = NA, 
+         peak_value = NA)
+
 ```
 
 ```{r}
@@ -540,31 +595,514 @@ gam_data_t <- combos %>%
 gam_data_t
 ```
 
+```{r models-count-data}
+
+# See project notes, but for now, using models in mgcv package for numeric data 
+# aggregated over individual plants (using Gamma distribution after adjusting 
+# zero values)
+
+  # brms spline models were prohibitively slow...
+  # ignoring 0s and using a gamma distribution (just modeling non-zeros) created weird patterns
+  # converting intensities to ordered classes (0:5) and using a poisson or NB caused crazy SE/CIs
+  # modeling original data with a ziGamma distribution (with glmmTMB) seems the
+    # most appropriate, but get crazy SE/CIs
+
+# List of numeric intensity categories
+counts <- gamdf %>%
+  filter(intensity_type == "number") %>%
+  distinct(class_id, phenophase_description, intensity_label)
+
+# Loop through intensity categories
+for (i in 1:nrow(counts)) {
+
+  # Extract data for that intensity category
+  count1 <- filter(gamdf, intensity_label == counts$intensity_label[i])
+  spps <- sort(unique(count1$common_name))
+  
+  # Loop through species
+  for (spp in spps) {
+    
+    message("Running models for ", spp, ": ", counts$intensity_label[i])
+
+    # Identify the rows of gams dataframe associated with species & intensity
+    row1 <- which(gams$intensity_label == counts$intensity_label[i] &
+                  gams$common_name == spp & is.na(gams$yr))
+    rowyrs <- which(gams$intensity_label == counts$intensity_label[i] &
+                    gams$common_name == spp & !is.na(gams$yr))
+    
+    # Extract data for that species
+    intdf <- filter(count1, common_name == spp)
+    
+    # Make variables into factors
+    intdf$fyr <- factor(intdf$yr)
+
+    # Nudge intensity midpoint 0 values
+    intdf <- intdf %>%
+      mutate(midpoint_adj = case_when(
+        intensity_midpoint == 0 ~ 0.01,
+        .default = intensity_midpoint
+      ))  
+
+    # Aggregate data across individual plants within a year
+    counts_yragg <- intdf %>%
+      group_by(fyr, yr, day_of_year, midpoint_adj) %>%
+      summarize(n_indiv = n(), .groups = "keep") %>%
+      data.frame()
+    
+    # Set k value
+    kval <- 20
+    
+    # Logical indicating whether to use a cyclic smooth (when observation date
+    # range starts in first two weeks of the year and ends in the last two weeks)
+    cubic_bs <- ifelse(min(intdf$day_of_year) <= 14 & max(intdf$day_of_year >= (365 - 14)),
+                       "cc", "cr")
+    
+    # Extract and save model settings
+    gams$k[c(rowyrs, row1)] <- kval
+    gams$smooth[c(rowyrs, row1)] <- cubic_bs
+
+    # Model with annual and global smooths ("GS" model in Pedersen et al. 2019).
+    # Wrapping call in suppressWarnings since these models always spit out a 
+    # warning about repeated 1-d smooths that we can safely ignore (according
+    # to Gavin Simpson)
+    suppressWarnings(
+      m_gs <- gam(midpoint_adj ~ s(day_of_year, k = kval, bs = cubic_bs) +
+                    s(day_of_year, fyr, k = kval, bs = "fs", xt = list(bs = cubic_bs), m = 1), 
+                  weights = n_indiv/mean(n_indiv),
+                  data = counts_yragg, method = "REML", 
+                  family = Gamma(link = "log"), select = TRUE)
+    )
+    # summary(m_gs)
+    
+    # Extract and save model results
+    gams$model[rowyrs] <- "GS"
+    gams$fyrs_p[rowyrs] <- summary(m_gs)$s.table[2,"p-value"]
+    gams$aic[rowyrs] <- round(AIC(m_gs), 2)
+    gams$devexpl[rowyrs] <- round(summary(m_gs)$dev.expl * 100, 1)
+    gams$kcheck[rowyrs] <- ifelse(any(k.check(m_gs)[, "p-value"] < 0.10),
+                                  "problem", "ok")
+    
+    # Plot global smooth:
+      # plot(m_gs, select = 1)
+      # plot(m_gs, select = 1, trans = exp, shift = coef(m_gs)[1], 
+      #      rug = FALSE, se = FALSE)
+      # plot_predictions(m_gs, by = "day_of_year", exclude = "s(day_of_year,fyr)", 
+      #                  type = "link", transform = exp) 
+    # Note that the CI around the global effect is huge. Similar to: 
+    # https://stats.stackexchange.com/questions/645096/interpretation-help-of-summary-from-basic-gam-models-with-random-smooths 
+    # If we reduce both k's a lot, then the CI gets smaller, but the annual 
+    # smooths don't seem like they fit the data well at all and the gam.check 
+    # p-values are much smaller.
+    
+    # Using marginaleffects package to look at annual smooths. 
+    # (need to use link and transform arguments to calculate properly and 
+    # prevent CI's from extending below 0.)
+      # plot_predictions(m_gs, by = c("day_of_year", "fyr"), type = "link", transform = exp)
+      # plot_predictions(m_gs, by = c("day_of_year", "fyr", "fyr"), type = "link", transform = exp)
+    # Note: can get dataframe with estimates by including draw = FALSE for 
+    # original data or newdata
+
+    # Model with annual smooths and NO global smooth ("S" model in Pedersen)
+    # m_s <- gam(midpoint_adj ~ s(day_of_year, fyr, k = kval, bs = "fs", 
+    #                             xt = list(bs = cubic_bs)), 
+    #            weights = n_indiv/mean(n_indiv),
+    #            data = counts_yragg, method = "REML", 
+    #            family = Gamma(link = "log"), select = TRUE)
+    # summary(m_s)
+    # plot_predictions(m_s, by = c("day_of_year", "fyr"))
+    # Annual smooths look very similar to those from GS model
+    
+    # Model with only a global smooth ("G" model in Pedersen; but keeping a 
+    # yearly random effect in the model).
+    m_g <- gam(midpoint_adj ~ s(day_of_year, k = kval, bs = cubic_bs) + s(fyr, bs = "re"), 
+               weights = n_indiv/mean(n_indiv),
+               data = counts_yragg, method = "REML", 
+               family = Gamma(link = "log"), select = TRUE)
+    # summary(m_g)
+    # plot_predictions(m_g, by = c("day_of_year"))
+    # gam.check(m_g)
+    
+    # Extract and save model results
+    gams$model[row1] <- "G"
+    gams$aic[row1] <- round(AIC(m_g), 2)
+    gams$devexpl[row1] <- round(summary(m_g)$dev.expl * 100, 1)
+    gamcheck_pvalues <- k.check(m_g)[, "p-value"]
+    gamcheck_pvalues <- gamcheck_pvalues[!is.na(gamcheck_pvalues)]
+    gams$kcheck[row1] <- ifelse(any(gamcheck_pvalues < 0.10), "problem", "ok")
+    
+    if (gams$kcheck[row1] == "problem") {
+      warning("gam.check for ", spp, ":", counts$intensity_label[i],
+              " (G) indicates potential problems with model fit.")
+    }
+    if (any(gams$kcheck[rowyrs] == "problem")) {
+      warning("gam.check for ", spp, ":", counts$intensity_label[i],
+              " (GS) indicates potential problems with model fit.")
+    }
+
+    # Calculating predictions (same results as marginaleffects::plot_predictions)
+    # See helpful G. Simpson code here:
+    # https://stats.stackexchange.com/questions/471267/plotting-gams-on-response-scale-with-multiple-smooth-and-linear-terms
+    
+    # Extract inverse link function
+    ilink <- family(m_g)$linkinv
+    
+    # Global preds from G model (can get predictions for global smooth in GS 
+    # model but the CIs are nonsensically huge)
+    newdata_g <- data.frame(
+      day_of_year = seq(min(counts_yragg$day_of_year), max(counts_yragg$day_of_year)),
+      fyr = intdf$fyr[1])
+    preds_g <- predict(m_g, newdata_g, type = "link", se.fit = TRUE, exclude = "s(fyr)")
+    preds_g <- cbind(newdata_g, preds_g)
+    preds_g <- preds_g %>%
+      mutate(lwr_ci = ilink(fit - (2 * se.fit)),
+             upr_ci = ilink(fit + (2 * se.fit)),
+             fitted = ilink(fit))
+    # Save date with maximum fitted value
+    gams$peak_date[row1] <- preds_g$day_of_year[preds_g$fitted == max(preds_g$fitted)]
+    gams$peak_value[row1] <- round(max(preds_g$fitted))
+    
+    # Global preds from GS model
+    # newdata_GSg <- data.frame(
+    #   day_of_year = seq(min(counts_yragg$day_of_year), max(counts_yragg$day_of_year)),
+    #   fyr = counts_yragg$fyr[1]) # Need to have a value for fyr, but it isn't used
+    # preds_GSg <- predict(m_gs, newdata_GSg, type = "link", se.fit = TRUE,
+    #                  exclude = "s(day_of_year,fyr)")
+    # preds_GSg <- cbind(newdata_GSg, preds_GSg)
+    # preds_GSg <- preds_GSg %>%
+    #   mutate(lwr_ci = ilink(fit - (2 * se.fit)),
+    #          upr_ci = ilink(fit + (2 * se.fit)),
+    #          fitted = ilink(fit))
+    
+    # Plot global smooth with raw data
+    counts_agg <- intdf %>%
+      group_by(day_of_year, midpoint_adj) %>%
+      summarize(n_obs = n(), .groups = "keep") %>%
+      data.frame()
+    # ggplot(preds_g, aes(x = day_of_year, y = fitted)) +
+    #   geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+    #   geom_point(data = counts_agg,
+    #              aes(x = day_of_year, y = midpoint_adj, size = n_obs),
+    #              shape = 16, alpha = 0.3, color = "forestgreen") +
+    #   geom_line() +
+    #   labs(x = "Day of year",
+    #        y = intdf$intensity_label[1],
+    #        size = "No. obs.",
+    #        title = paste0(str_to_sentence(intdf$common_name[1]),
+    #                         " (", str_to_upper(intdf$site[1]), ")")) +
+    #   theme_bw()
+
+    # Annual predictions (only for observed date range)
+    counts_yragg$yr <- as.numeric(as.character(counts_yragg$fyr))
+    for (yr in sort(unique(counts_yragg$yr))) {
+      min_doy <- min(counts_yragg$day_of_year[counts_yragg$fyr == yr])
+      max_doy <- max(counts_yragg$day_of_year[counts_yragg$fyr == yr])
+      doys <- seq(min_doy, max_doy)
+      if (yr == min(counts_yragg$yr)) {
+        newdata_a <- data.frame(fyr = yr, day_of_year = doys)
+      } else {
+        newdata_a <- rbind(newdata_a, data.frame(fyr = yr, day_of_year = doys))
+      }
+    }
+    newdata_a$fyr <- factor(newdata_a$fyr)
+    # From GS model
+    preds_a <- predict(m_gs, newdata_a, type = "link", se.fit = TRUE)
+    preds_a <- cbind(newdata_a, preds_a)
+    preds_a <- preds_a %>%
+      mutate(lwr_ci = ilink(fit - (2 * se.fit)),
+             upr_ci = ilink(fit + (2 * se.fit)),
+             fitted = ilink(fit))
+    peaks <- preds_a %>%
+      group_by(fyr) %>%
+      summarize(peak_date = day_of_year[fitted == max(fitted)],
+                peak_value = max(fitted))
+    gams$peak_date[rowyrs] <- peaks$peak_date
+    gams$peak_value[rowyrs] <- round(peaks$peak_value)
+    
+    # Create bounded CIs for plots (useful if CIs get crazy high) 
+    plotmax <- ifelse(max(intdf$intensity_midpoint) == 10001,
+                      10000 * 2, max(intdf$intensity_midpoint) * 2)
+    preds_a <- preds_a %>%
+      mutate(upr_ci_b = ifelse(upr_ci > plotmax, plotmax, upr_ci))
+    
+    # Logical to indicate whether to use same y-axis in each year's panel
+    same_yaxis <- FALSE
+    
+    if (same_yaxis) {
+      ann_plot <- ggplot(data = preds_a, aes(x = day_of_year)) +
+        facet_wrap(~fyr) +
+        geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci_b), alpha = 0.25)
+        # Don't expand upper end of y-axis (only needed if cutting off CIs)  
+        if (max(preds_a$upr_ci) >= plotmax) {
+          ann_plot <- ann_plot +
+            scale_y_continuous(expand = expansion(mult = c(0.05, 0)))
+        }
+    } else {
+      ann_plot <- ggplot(data = preds_a, aes(x = day_of_year)) +
+        facet_wrap(~fyr, scales = "free_y") +
+        geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.25)
+    }
+    ann_plot <- ann_plot +
+      # geom_point(data = counts_yragg,
+      #            aes(x = day_of_year, y = midpoint_adj, size = n_indiv),
+      #            shape = 16, alpha = 0.3, color = "forestgreen") +
+      geom_line(aes(y = fitted)) +
+      labs(x = "Day of year", 
+             y = intdf$intensity_label[1], 
+             size = "No. plants",
+             title = paste0(str_to_sentence(intdf$common_name[1]), 
+                            " (", str_to_upper(intdf$site[1]), ")")) +
+      theme_bw()
+
+    # Plotting on the log scale makes thing look sooooo different.
+      # yaxis_labels <- as.character(sort(unique(intdf$intensity_midpoint)))
+      # yaxis_labels <- str_replace(yaxis_labels, "10001", "10000")
+      # yaxis_breaks <- as.numeric(yaxis_labels)
+      # 
+      # ggplot(data = preds_a, aes(x = day_of_year)) +
+      #   facet_wrap(~fyr, scales = "free_y") +
+      #   geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.25) +
+      #   geom_line(aes(y = fitted)) +
+      #   geom_point(data = intdf, aes(y = midpoint_adj, x = day_of_year)) +
+      #   scale_y_log10(breaks = yaxis_breaks,
+      #                 labels = yaxis_labels)
+    
+    # Plot global and annual curves together
+    gs_smooths <- ggplot(preds_g, aes(x = day_of_year, y = fitted)) +
+      # geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+      geom_point(data = counts_yragg,
+                 aes(x = day_of_year, y = midpoint_adj, size = n_indiv,
+                     color = fyr),
+                 shape = 16, alpha = 0.25) +
+      # Using stuff below to include only whole numbers in size legend
+      scale_size_continuous(
+        range = c(1, 4), 
+        breaks = function(x) {
+          range_x <- range(counts_yragg$n_indiv, na.rm = TRUE)
+          int_range <- seq(ceiling(range_x[1]), floor(range_x[2]), by = 1)
+          # If too many breaks, thin them out
+          if (length(int_range) > 5) {
+            step <- ceiling(length(int_range) / 5)
+            int_range[seq(1, length(int_range), by = step)]
+          } else {
+            int_range
+          }
+        }) +
+      geom_line(data = preds_a, aes(x = day_of_year, y = fitted, color = fyr)) +
+      geom_line(linewidth = 1) +
+      labs(x = "Day of year", 
+           y = intdf$intensity_label[1], 
+           color = "Year",
+           size = "No. obs.",
+           title = paste0(str_to_sentence(intdf$common_name[1]), 
+                            " (", str_to_upper(intdf$site[1]), ")")) +
+      theme_bw() +
+      theme(panel.grid = element_blank(),
+            text = element_text(size = 8))
+    # gs_smooths
+    
+    spp_nospace <- str_replace_all(spp, " ", "_")
+    png_name <- paste0("output/gam-plots/",
+                       intdf$intensity_short[1], "-", spp_nospace, 
+                       ".png")
+    
+    ggsave(png_name,
+           plot = gs_smooths,
+           width = 6.5,
+           height = 4,
+           units = "in")
+    
+    # Evaluate how intensity curve varies from curve explaining weekly 
+    # proportion of plants in phase?
+      # intdf_status <- intdf %>%
+      #   mutate(wk = week(observation_date)) %>%
+      #   group_by(individual_id, fyr, wk) %>%
+      #   summarize(status = max(phenophase_status), .groups = "keep") %>%
+      #   group_by(fyr, wk) %>%
+      #   summarize(prop = sum(status) / n(),
+      #             n_plants = n(),
+      #             .groups = "keep") %>%
+      #   data.frame() %>%
+      #   mutate(doy = wk * 7 - 3) %>%
+      #   filter(wk < 53)
+      # 
+      # m_prop <- gam(prop ~ s(doy, k = kval, bs = cubic_bs),
+      #               weights = n_plants,
+      #               data = intdf_status, family = binomial,
+      #               method = "REML")
+      # summary(m_prop)
+      # 
+      # invlogit <- function(x) {
+      #   exp(x) / (1 + exp(x))
+      # }
+      # 
+      # preds_prop <- plot_predictions(m_prop, by = "doy", draw = FALSE,
+      #                                type = "link", transform = invlogit) %>%
+      #   select(doy, estimate, conf.low, conf.high) %>%
+      #   rename(day_of_year = doy,
+      #          fitted = estimate,
+      #          lwr_ci = conf.low,
+      #          upr_ci = conf.high)
+      # 
+      # p_prop <- ggplot(data = preds_prop, aes(x = day_of_year, y = fitted)) +
+      #   geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.4) +
+      #   geom_line() +
+      #   scale_x_continuous(limits = c(0, 365)) +
+      #   labs(y = "Proportion of plants in phase") +
+      #   theme_bw() +
+      #   theme(axis.text.x = element_blank(),
+      #         axis.title.x = element_blank())
+      # p_int <- ggplot(data = preds_g, aes(x = day_of_year, y = fitted)) +
+      #   geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.4) +
+      #   geom_line() +
+      #   scale_x_continuous(limits = c(0, 365)) +
+      #   labs(y = intdf$intensity_label[1], x = "Day of year") +
+      #   theme_bw()
+      # 
+      # plot_grid(p_prop, p_int, ncol = 1, align = "v", axis = "lr")
+  }
+}
+
+```
+
 ```{r models-proportion-data}
 
-# See project notes for week of 2-6 June, but for now, using:
-# models in glmmTMB package (ordbeta distribution) for proportions
+# See project notes, but for now, using models in glmmTMB package for proportion
+# data aggregated over individual plants 
 
-# brms/ordbetareg spline models were prohibitively slow...
+  # brms/ordbetareg spline models were prohibitively slow...
 
-# For now, pick an example intensity-species:
-i = 15 # leaf canopy fullness, dwarf birch
+# List of proportion intensity categories
+proportions <- gamdf %>%
+  filter(intensity_type == "percent") %>%
+  distinct(class_id, phenophase_description, intensity_label)
 
-# Subset data
-intdf <- gamdf %>%
-  filter(intensity_label == combos$intensity_label[i],
-         common_name == combos$common_name[i])
+# Loop through intensity categories
+# for (i in 1:nrow(proportions)) {
+i = 1 # 5
 
-# Convert percentages to proportions and make other variables into factors
-intdf$individual_id <- factor(intdf$individual_id)
-intdf$fyr <- factor(intdf$yr)
-intdf$indyr <- factor(paste0(intdf$individual_id, "_", intdf$yr))
-intdf$prop <- intdf$intensity_midpoint / 100
+  # Extract data for that intensity category
+  prop1 <- filter(gamdf, intensity_label == proportions$intensity_label[i])
+  spps <- sort(unique(prop1$common_name))
+  
+  # Loop through species
+  # for (spp in spps) {
+  spp <- spps[1]
+    
+    message("Running models for ", spp, ": ", proportions$intensity_label[i])
 
-# Wasn't sure how to specify random effects, but based on this website:
-# https://fromthebottomoftheheap.net/2017/05/04/compare-mgcv-with-glmmtmb/
-# we can use an lme4 specification and that's very similar to the mgcv spec
-# with bs = "re".
+    # Identify the rows of gams dataframe associated with species & intensity
+    row1 <- which(gams$intensity_label == proportions$intensity_label[i] &
+                  gams$common_name == spp & is.na(gams$yr))
+    rowyrs <- which(gams$intensity_label == proportions$intensity_label[i] &
+                    gams$common_name == spp & !is.na(gams$yr))
+    
+    # Extract data for that species
+    intdf <- filter(prop1, common_name == spp)
+    
+    # Make variables into factors
+    intdf$fyr <- factor(intdf$yr)
+
+    # Convert percentages to proportions
+    intdf <- intdf %>%
+      mutate(prop = intensity_midpoint / 100)
+
+    # Aggregate data across individual plants within a year
+    props_yragg <- intdf %>%
+      group_by(fyr, yr, day_of_year, prop) %>%
+      summarize(n_indiv = n(), .groups = "keep") %>%
+      data.frame()
+    
+    # Aggregate data across individual plants and years
+    props_agg <- intdf %>%
+      group_by(day_of_year, prop) %>%
+      summarize(n_obs = n(), .groups = "keep") %>%
+      data.frame()
+    
+    # Set k value
+    kval <- 10
+    
+    # Logical indicating whether to use a cyclic smooth (when observation date
+    # range starts in first two weeks of the year and ends in the last two weeks)
+    cubic_bs <- ifelse(min(intdf$day_of_year) <= 14 & max(intdf$day_of_year >= (365 - 14)),
+                       "cc", "cr")
+    
+    # Extract and save model settings
+    gams$k[c(rowyrs, row1)] <- kval
+    gams$smooth[c(rowyrs, row1)] <- cubic_bs
+
+    # Model with only a global smooth ("G" model in Pedersen)
+    m_g <- glmmTMB(prop ~ s(day_of_year, k = kval, bs = cubic_bs), 
+                   weights = n_obs,
+                   data = props_agg, REML = TRUE, family = ordbeta)
+    summary(m_g)
+    
+    # Extract inverse link function
+    ilink <- family(m_g)$linkinv
+    
+    # Global preds from G model (can get predictions for global smooth in GS 
+    # model but the CIs are nonsensically huge)
+    newdata_g <- data.frame(
+      day_of_year = seq(min(props_agg$day_of_year), max(props_agg$day_of_year)),
+      n_obs = NA)
+    preds_g <- predict(m_g, newdata_g, type = "link", se.fit = TRUE)
+    preds_g <- cbind(newdata_g, preds_g)
+    preds_g <- preds_g %>%
+      mutate(lwr_ci = ilink(fit - (2 * se.fit)),
+             upr_ci = ilink(fit + (2 * se.fit)),
+             fitted = ilink(fit))
+    
+    ggplot(preds_g, aes(x = day_of_year)) +
+      geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.3) +
+      geom_line(aes(y = fitted))
+    
+    # Model with annual and global smooths ("GS" model in Pedersen et al. 2019).
+    m_gs <- glmmTMB(prop ~ s(day_of_year, k = kval, bs = cubic_bs) +
+                      s(day_of_year, fyr, k = kval, bs = "fs", xt = list(bs = cubic_bs)), 
+                    weights = n_indiv,
+                    data = props_yragg, REML = TRUE, family = ordbeta)
+    # summary(m_gs)
+    # ranef(m_gs)
+    
+    # Create new data frame for prediction (only observed days in each year)
+    for (yr in sort(unique(intdf$yr))) {
+      min_doy <- min(intdf$day_of_year[intdf$fyr == yr])
+      max_doy <- max(intdf$day_of_year[intdf$fyr == yr])
+      doys <- seq(min_doy, max_doy)
+      if (yr == min(intdf$yr)) {
+        newdata_gs <- data.frame(fyr = yr, day_of_year = doys)
+      } else {
+        newdata_gs <- rbind(newdata_gs, data.frame(fyr = yr, day_of_year = doys))
+      }
+    }
+    newdata_gs$fyr <- factor(newdata_gs$fyr)
+    newdata_gs$n_indiv <- NA
+    
+    # Make annual predictions (averaging over individual plant effects)
+    preds_gs <- predict(m_gs, newdata_gs, type = "link", se.fit = TRUE)
+    preds_gs <- cbind(newdata_gs, preds_gs)
+    preds_gs <- preds_gs %>%
+      mutate(lwr_ci = ilink(fit - (2 * se.fit)),
+             upr_ci = ilink(fit + (2 * se.fit)),
+             fitted = ilink(fit))
+
+    # Create faceted plots
+    ggplot(data = preds_gs, aes(x = day_of_year)) +
+      facet_wrap(~fyr) +
+      geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.25) +
+      geom_line(aes(y = fitted)) +
+      geom_point(data = props_yragg, aes(y = prop, size = n_indiv), 
+                 color = "forestgreen", alpha = 0.25) +
+      scale_size_continuous(range = c(1, 4)) +
+      theme_bw()
+
+    
+    
+
+
+#   }
+# }
+
+
 
 # Create a model with a global smooth and annual smooths with the same smoothness
 # (a "GS" model in Pedersen et al. 2019). 
@@ -611,95 +1149,7 @@ ggplot(data = m1_new, aes(x = day_of_year)) +
 
 #TODO: Figure out how to make/plot global predictions (just the s(day_of_year) term)
   # See if emmeans or marginaleffects packages will be helpful.
-#TODO: Determine whether we should use tprs (default) or cubic (cr) splines. 
-  # AIC for tprs lower, but day_of_year term p-value higher (0.21 vs 0.0003).
-  # Annual predictions from models look pretty similar.
 #TODO: Look into model checking/diagnostics (DHARMa package?)
-#TODO: Do we need to assess signficance of model components?
-  # Annual smooths and/or individual random effects
-```
-
-```{r models-count-data}
-
-# See project notes for week of 2-6 June, but for now, using:
-# models in mgcv package (Gamma distribution) for numeric data (after adjusting 0 values)
-
-# brms/ordbetareg spline models were prohibitively slow...
-# ignoring 0s and using a gamma distribution (just modeling non-zeros) created weird patterns
-# converting intensities to ordered classes (0:5) and using a poisson or NB caused crazy SE/CIs
-# modeling original data with a ziGamma distribution (with glmmTMB) seems the
-  # most appropriate, but get crazy SE/CIs for long periods (even when all 0s)
-
-# For now, pick an example intensity-species:
-i = 1 # breaking leaf buds, dwarf birch
-
-# Subset data
-intdf <- gamdf %>%
-  filter(intensity_label == combos$intensity_label[i],
-         common_name == combos$common_name[i])
-
-# Make variables into factors
-intdf$individual_id <- factor(intdf$individual_id)
-intdf$fyr <- factor(intdf$yr)
-intdf$indyr <- factor(paste0(intdf$individual_id, "_", intdf$yr))
-
-# Nudge intensity midpoint 0 values
-intdf <- intdf %>%
-  mutate(midpoint_adj = case_when(
-    intensity_midpoint == 0 ~ 0.01,
-    .default = intensity_midpoint
-  ))
-
-# Create a model with a global smooth and annual smooths with the same smoothness
-# (a "GS" model in Pedersen et al. 2019). 
-m2 <- gam(midpoint_adj ~ s(day_of_year, k = 20) + 
-            s(day_of_year, fyr, k = 10, bs = "fs", m = 1) + 
-            s(individual_id, bs = "re"),
-          data = intdf, 
-          method = "REML", family = Gamma(link = "log"), select = TRUE,
-          knots = list(day_of_year = c(0, 365)))
-summary(m2)
-  # Get a warning: model has repeated 1-d smooths of same variable.
-gratia::draw(m2)
-  #TODO: Understand this output better
-  # Look at individual plants -- one seems to be an outlier
-mgcv::gam.check(m2)
-  # Low p-values indicate a problem...
-
-# Create new data frame for prediction (only observed days in each year)
-for (yr in sort(unique(intdf$yr))) {
-  min_doy <- min(intdf$day_of_year[intdf$fyr == yr])
-  max_doy <- max(intdf$day_of_year[intdf$fyr == yr])
-  doys <- seq(min_doy, max_doy)
-  if (yr == min(intdf$yr)) {
-    m2_new <- data.frame(fyr = yr, day_of_year = doys)
-  } else {
-    m2_new <- rbind(m2_new, data.frame(fyr = yr, day_of_year = doys))
-  }
-}
-m2_new$individual_id <- intdf$individual_id[1]
-m2_new$fyr <- factor(m2_new$fyr)
-
-# Make annual predictions (averaging over individual plant effects)
-m2_fit <- predict(m2,
-                  m2_new,
-                  se.fit = TRUE,
-                  exclude = "s(individual_id)")
-m2_new$fit_l <- as.numeric(m2_fit$fit)
-m2_new$se <- as.numeric(m2_fit$se.fit)
-m2_new <- m2_new %>%
-  mutate(lcl = exp(fit_l - (2 * se)),
-         ucl = exp(fit_l + (2 * se)),
-         fit = exp(fit_l))
-
-# Create faceted plots
-ggplot(data = m2_new, aes(x = day_of_year)) +
-  facet_wrap(~fyr) +
-  geom_ribbon(aes(ymin = lcl, ymax = ucl), alpha = 0.25) +
-  geom_line(aes(y = fit)) +
-  geom_point(data = intdf, aes(y = midpoint_adj)) +
-  scale_y_log10(breaks = c(0.01, 1, 10, 100, 1000, 5000), 
-                labels = c("0.01", "1","10","100","1000", "5000"))
 ```
 
 ```{r mgcv-old}
@@ -776,7 +1226,7 @@ cubic_bs <- ifelse(min(intdf$day_of_year) <= 14 & max(intdf$day_of_year >= (365 
 # Fit same smooth each year, random intercepts for individual plants without 
 # any accounting for year (and many plants monitored in multiple years)
   # m0 <- gam(resp ~ s(day_of_year, bs = "cc", k = 20) +  s(individual_id, bs = "re"),
-  #           method = "REML", data = intdf)
+  #           method = "REML", data = intdf, select = TRUE)
   # summary(m0)
 # I'm not sure this is valid given that we're interested in plant-specific
 # annual curves. If year isn't in the model anywhere then we're creating one
@@ -785,7 +1235,7 @@ cubic_bs <- ifelse(min(intdf$day_of_year) <= 14 & max(intdf$day_of_year >= (365 
 # Fit same smooth each year, with random intercepts for each plant-year combo
 m1 <- gam(intensity_t ~ s(day_of_year, bs = cubic_bs, k = 20) +  
             s(individual_id, fyr, bs = "re"),
-          method = "REML", data = intdf)
+          method = "REML", data = intdf, select = TRUE)
 summary(m1)
 
   # Get names of smooth terms
@@ -845,7 +1295,7 @@ m2 <- gam(intensity_t ~ fyr +
             s(day_of_year, by = fyr) +
               # , bs = cubic_bs, k = 30) +
             s(individual_id, bs = "re"),
-          method = "REML", data = intdf)
+          method = "REML", data = intdf, select = TRUE)
 summary(m2)
 
   # Get names of smooth terms
@@ -911,7 +1361,7 @@ AIC(m1, m2)
 # https://stackoverflow.com/questions/68659805/mgcv-gam-more-than-one-variable-in-by-argument-smooth-varying-by-more-than-1
   # m3 <- gam(intensity_midpoint_log ~ fyr + individual_id +
   #             s(day_of_year, by = interaction(fyr, individual_id), bs = "cr", k = 20),
-  #           method = "REML", data = intdf)
+  #           method = "REML", data = intdf, select = TRUE)
   # summary(m3)
 
 # Looking at intensity data that are proportions/percentages
@@ -933,7 +1383,8 @@ cubic_bs <- ifelse(min(intdf$day_of_year) <= 14 & max(intdf$day_of_year >= (365 
 intdf$resp <- intdf$resp / 100
 m1 <- gam(resp ~ s(day_of_year, bs = cubic_bs, k = 20) +  
             s(individual_id, fyr, bs = "re"),
-          method = "REML", family = betar(link = "logit"), data = intdf)
+          method = "REML", family = betar(link = "logit"), 
+          select = TRUE, data = intdf)
 summary(m1)
 
   # Get names of smooth terms
@@ -991,7 +1442,7 @@ summary(m1)
   
   m1trans <- gam(respR ~ s(day_of_year, bs = cubic_bs, k = 20) +  
                  s(individual_id, fyr, bs = "re"),
-          method = "REML", data = intdf)
+                 method = "REML", select = TRUE, data = intdf)
   summary(m1trans)
 
   m1_p <- predict(m1trans, newdata = m1_new, type = "terms", 
@@ -1040,7 +1491,7 @@ summary(m1)
 m2trans <- gam(respR ~ fyr + 
                s(day_of_year, by = fyr, bs = cubic_bs, k = 20) +
                s(individual_id, bs = "re"),
-          method = "REML", data = intdf)
+               method = "REML", select = TRUE, data = intdf)
 summary(m2trans)
 
   # Get names of smooth terms

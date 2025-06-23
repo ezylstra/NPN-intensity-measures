@@ -578,7 +578,9 @@ gams <- gamdf %>%
          devexpl = NA,
          kcheck = NA,
          peak_date = NA, 
-         peak_value = NA)
+         peak_value = NA,
+         # optimizer = NA, 
+         convergence = NA)
 
 ```
 
@@ -977,18 +979,19 @@ proportions <- gamdf %>%
   distinct(class_id, phenophase_description, intensity_label)
 
 # Loop through intensity categories
-# for (i in 1:nrow(proportions)) {
-i = 1 # 5
+for (i in 1:nrow(proportions)) {
 
   # Extract data for that intensity category
-  prop1 <- filter(gamdf, intensity_label == proportions$intensity_label[i])
+  prop1 <- filter(gamdf, intensity_label == proportions$intensity_label[i] &
+                    phenophase_description == proportions$phenophase_description[i])
   spps <- sort(unique(prop1$common_name))
   
   # Loop through species
-  # for (spp in spps) {
-  spp <- spps[1]
-    
+  for (spp in spps) {
+
     message("Running models for ", spp, ": ", proportions$intensity_label[i])
+    m_g <- NULL
+    m_gs <- NULL
 
     # Identify the rows of gams dataframe associated with species & intensity
     row1 <- which(gams$intensity_label == proportions$intensity_label[i] &
@@ -1011,15 +1014,9 @@ i = 1 # 5
       group_by(fyr, yr, day_of_year, prop) %>%
       summarize(n_indiv = n(), .groups = "keep") %>%
       data.frame()
-    
-    # Aggregate data across individual plants and years
-    props_agg <- intdf %>%
-      group_by(day_of_year, prop) %>%
-      summarize(n_obs = n(), .groups = "keep") %>%
-      data.frame()
-    
+
     # Set k value
-    kval <- 10
+    kval <- 20
     
     # Logical indicating whether to use a cyclic smooth (when observation date
     # range starts in first two weeks of the year and ends in the last two weeks)
@@ -1030,127 +1027,168 @@ i = 1 # 5
     gams$k[c(rowyrs, row1)] <- kval
     gams$smooth[c(rowyrs, row1)] <- cubic_bs
 
-    # Model with only a global smooth ("G" model in Pedersen)
-    m_g <- glmmTMB(prop ~ s(day_of_year, k = kval, bs = cubic_bs), 
-                   weights = n_obs,
-                   data = props_agg, REML = TRUE, family = ordbeta)
-    summary(m_g)
+    # Model with annual and global smooths ("GS" model in Pedersen et al. 2019).
+    # Using tryCatch to identify any warnings
+    m_gs <- glmmTMB(prop ~ s(day_of_year, k = kval, bs = cubic_bs) +
+                      s(day_of_year, fyr, k = kval, bs = "fs", xt = list(bs = cubic_bs), m = 1), 
+                    weights = n_indiv/mean(n_indiv),
+                    data = props_yragg, REML = TRUE, family = ordbeta)
+    # if (m_gs$fit$convergence != 0 | m_gs$sdr$pdHess == FALSE) {
+    #   m_gs <- glmmTMB(prop ~ s(day_of_year, k = kval, bs = cubic_bs) +
+    #                     s(day_of_year, fyr, k = kval, bs = "fs", xt = list(bs = cubic_bs), m = 1), 
+    #                   weights = n_indiv/mean(n_indiv), 
+    #                   control = glmmTMBControl(optimizer = optim, optArgs = list(method="nlminb")),
+    #                   data = props_yragg, REML = TRUE, family = ordbeta)
+    # }
+
+    # Extract and save model results (not sure if/how to get some of these metrics)
+    gams$model[rowyrs] <- "GS"
+    # gams$fyrs_p[rowyrs] <- summary(m_gs)$s.table[2,"p-value"]
+    gams$aic[rowyrs] <- round(AIC(m_gs), 2)
+    # gams$devexpl[rowyrs] <- round(summary(m_gs)$dev.expl * 100, 1)
+    # gams$kcheck[rowyrs] <- ifelse(any(k.check(m_gs)[, "p-value"] < 0.10),
+    #                               "problem", "ok")
+    # gams$optimizer[rowyrs] <- m_gs$obj$method
+    gams$convergence[rowyrs] <- m_gs$fit$convergence 
+    
+    # Model with only a global smooth ("G" model in Pedersen; but keeping a 
+    # yearly random effect in the model)
+    m_g <- glmmTMB(prop ~ s(day_of_year, k = kval, bs = cubic_bs) + (1|fyr), 
+                   weights = n_indiv/mean(n_indiv),
+                   data = props_yragg, REML = TRUE, family = ordbeta)
+    # if (m_g$fit$convergence != 0 | m_g$sdr$pdHess == FALSE) {
+    #   m_g <- glmmTMB(prop ~ s(day_of_year, k = kval, bs = cubic_bs) + (1|fyr), 
+    #                  weights = n_indiv/mean(n_indiv),
+    #                  control = glmmTMBControl(optimizer = optim, optArgs = list(method="BFGS")),
+    #                  data = props_yragg, REML = TRUE, family = ordbeta)
+    # }
+
+    # Extract and save model results (not sure if/how to get some of these metrics)
+    gams$model[row1] <- "G"
+    gams$aic[row1] <- round(AIC(m_g), 2)
+    # gams$devexpl[row1] <- round(summary(m_g)$dev.expl * 100, 1)
+    # gamcheck_pvalues <- k.check(m_g)[, "p-value"]
+    # gamcheck_pvalues <- gamcheck_pvalues[!is.na(gamcheck_pvalues)]
+    # gams$kcheck[row1] <- ifelse(any(gamcheck_pvalues < 0.10), "problem", "ok")
+    # gams$optimizer[row1] <- m_g$obj$method
+    gams$convergence[row1] <- m_g$fit$convergence 
     
     # Extract inverse link function
     ilink <- family(m_g)$linkinv
     
-    # Global preds from G model (can get predictions for global smooth in GS 
-    # model but the CIs are nonsensically huge)
+    # Global preds from G model
     newdata_g <- data.frame(
-      day_of_year = seq(min(props_agg$day_of_year), max(props_agg$day_of_year)),
-      n_obs = NA)
+      day_of_year = seq(min(props_yragg$day_of_year), max(props_yragg$day_of_year)),
+      fyr = intdf$fyr[1],
+      n_indiv = NA)
     preds_g <- predict(m_g, newdata_g, type = "link", se.fit = TRUE)
     preds_g <- cbind(newdata_g, preds_g)
     preds_g <- preds_g %>%
       mutate(lwr_ci = ilink(fit - (2 * se.fit)),
              upr_ci = ilink(fit + (2 * se.fit)),
              fitted = ilink(fit))
+    # Save date with maximum fitted value
+    gams$peak_date[row1] <- preds_g$day_of_year[preds_g$fitted == max(preds_g$fitted)][1]
+    gams$peak_value[row1] <- round(max(preds_g$fitted), 2)
     
-    ggplot(preds_g, aes(x = day_of_year)) +
-      geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.3) +
-      geom_line(aes(y = fitted))
-    
-    # Model with annual and global smooths ("GS" model in Pedersen et al. 2019).
-    m_gs <- glmmTMB(prop ~ s(day_of_year, k = kval, bs = cubic_bs) +
-                      s(day_of_year, fyr, k = kval, bs = "fs", xt = list(bs = cubic_bs)), 
-                    weights = n_indiv,
-                    data = props_yragg, REML = TRUE, family = ordbeta)
-    # summary(m_gs)
-    # ranef(m_gs)
-    
-    # Create new data frame for prediction (only observed days in each year)
-    for (yr in sort(unique(intdf$yr))) {
-      min_doy <- min(intdf$day_of_year[intdf$fyr == yr])
-      max_doy <- max(intdf$day_of_year[intdf$fyr == yr])
+    # Plot global smooth with raw data
+    props_agg <- intdf %>%
+      group_by(day_of_year, prop) %>%
+      summarize(n_obs = n(), .groups = "keep") %>%
+      data.frame()
+    # ggplot(preds_g, aes(x = day_of_year, y = fitted)) +
+    #   geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+    #   geom_point(data = props_agg,
+    #              aes(x = day_of_year, y = prop, size = n_obs),
+    #              shape = 16, alpha = 0.3, color = "forestgreen") +
+    #   geom_line() +
+    #   labs(x = "Day of year",
+    #        y = intdf$intensity_label[1],
+    #        size = "No. obs.",
+    #        title = paste0(str_to_sentence(intdf$common_name[1]),
+    #                         " (", str_to_upper(intdf$site[1]), ")")) +
+    #   theme_bw()
+
+    # Annual predictions (only for observed date range)
+    for (yr in sort(unique(props_yragg$yr))) {
+      min_doy <- min(props_yragg$day_of_year[props_yragg$yr == yr])
+      max_doy <- max(props_yragg$day_of_year[props_yragg$yr == yr])
       doys <- seq(min_doy, max_doy)
-      if (yr == min(intdf$yr)) {
-        newdata_gs <- data.frame(fyr = yr, day_of_year = doys)
+      if (yr == min(props_yragg$yr)) {
+        newdata_a <- data.frame(fyr = yr, day_of_year = doys)
       } else {
-        newdata_gs <- rbind(newdata_gs, data.frame(fyr = yr, day_of_year = doys))
+        newdata_a <- rbind(newdata_a, data.frame(fyr = yr, day_of_year = doys))
       }
     }
-    newdata_gs$fyr <- factor(newdata_gs$fyr)
-    newdata_gs$n_indiv <- NA
-    
-    # Make annual predictions (averaging over individual plant effects)
-    preds_gs <- predict(m_gs, newdata_gs, type = "link", se.fit = TRUE)
-    preds_gs <- cbind(newdata_gs, preds_gs)
-    preds_gs <- preds_gs %>%
+    newdata_a$fyr <- factor(newdata_a$fyr)
+    newdata_a$n_indiv <- NA
+    # From GS model
+    preds_a <- predict(m_gs, newdata_a, type = "link", se.fit = TRUE)
+    preds_a <- cbind(newdata_a, preds_a)
+    preds_a <- preds_a %>%
       mutate(lwr_ci = ilink(fit - (2 * se.fit)),
              upr_ci = ilink(fit + (2 * se.fit)),
              fitted = ilink(fit))
-
-    # Create faceted plots
-    ggplot(data = preds_gs, aes(x = day_of_year)) +
-      facet_wrap(~fyr) +
-      geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.25) +
-      geom_line(aes(y = fitted)) +
-      geom_point(data = props_yragg, aes(y = prop, size = n_indiv), 
-                 color = "forestgreen", alpha = 0.25) +
-      scale_size_continuous(range = c(1, 4)) +
-      theme_bw()
-
+    peaks <- preds_a %>%
+      group_by(fyr) %>%
+      summarize(peak_date = day_of_year[fitted == max(fitted)][1],
+                peak_value = max(fitted))
+    gams$peak_date[rowyrs] <- peaks$peak_date
+    gams$peak_value[rowyrs] <- round(peaks$peak_value, 2)
     
+    # Plot global and annual curves together
+    gs_smooths <- ggplot(preds_g, aes(x = day_of_year, y = fitted)) +
+      # geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+      geom_point(data = props_yragg,
+                 aes(x = day_of_year, y = prop, size = n_indiv,
+                     color = fyr),
+                 shape = 16, alpha = 0.25) +
+      # Using stuff below to include only whole numbers in size legend
+      scale_size_continuous(
+        range = c(1, 4), 
+        breaks = function(x) {
+          range_x <- range(props_yragg$n_indiv, na.rm = TRUE)
+          int_range <- seq(ceiling(range_x[1]), floor(range_x[2]), by = 1)
+          # If too many breaks, thin them out
+          if (length(int_range) > 5) {
+            step <- ceiling(length(int_range) / 5)
+            int_range[seq(1, length(int_range), by = step)]
+          } else {
+            int_range
+          }
+        }) +
+      geom_line(data = preds_a, aes(x = day_of_year, y = fitted, color = fyr)) +
+      geom_line(linewidth = 1) +
+      labs(x = "Day of year", 
+           y = intdf$intensity_label[1], 
+           color = "Year",
+           size = "No. obs.",
+           title = paste0(str_to_sentence(intdf$common_name[1]), 
+                            " (", str_to_upper(intdf$site[1]), ")")) +
+      theme_bw() +
+      theme(panel.grid = element_blank(),
+            text = element_text(size = 8))
+    # gs_smooths
     
+    spp_nospace <- str_replace_all(spp, " ", "_")
+    png_name <- paste0("output/gam-plots/",
+                       intdf$intensity_short[1], "-", spp_nospace, 
+                       ".png")
+    
+    ggsave(png_name,
+           plot = gs_smooths,
+           width = 6.5,
+           height = 4,
+           units = "in")
 
-
-#   }
-# }
-
-
-
-# Create a model with a global smooth and annual smooths with the same smoothness
-# (a "GS" model in Pedersen et al. 2019). 
-m1 <- glmmTMB(prop ~ s(day_of_year, k = 20) +
-                s(day_of_year, fyr, k = 20, bs = "fs", m = 1) + 
-                (1|individual_id),
-              data = intdf, REML = TRUE, family = ordbeta)
-summary(m1)
-
-# Create new data frame for prediction (only observed days in each year)
-for (yr in sort(unique(intdf$yr))) {
-  min_doy <- min(intdf$day_of_year[intdf$fyr == yr])
-  max_doy <- max(intdf$day_of_year[intdf$fyr == yr])
-  doys <- seq(min_doy, max_doy)
-  if (yr == min(intdf$yr)) {
-    m1_new <- data.frame(fyr = yr, day_of_year = doys)
-  } else {
-    m1_new <- rbind(m1_new, data.frame(fyr = yr, day_of_year = doys))
-  }
+ }
 }
-m1_new$individual_id <- NA
-m1_new$fyr <- factor(m1_new$fyr)
 
-# Make annual predictions (averaging over individual plant effects)
-m1_fit <- predict(m1,
-                  m1_new,
-                  se.fit = TRUE,
-                  type = "link")
-m1_new$fit_l <- as.numeric(m1_fit$fit)
-m1_new$se <- as.numeric(m1_fit$se.fit)
-m1_new <- m1_new %>%
-  mutate(lcl_l = fit_l - (2 * se),
-         ucl_l = fit_l + (2 * se),
-         fit = exp(fit_l) / (1 + exp(fit_l)),
-         lcl = exp(lcl_l) / (1 + exp(lcl_l)),
-         ucl = exp(ucl_l) / (1 + exp(ucl_l)))
-
-# Create faceted plots
-ggplot(data = m1_new, aes(x = day_of_year)) +
-  facet_wrap(~fyr) +
-  geom_ribbon(aes(ymin = lcl, ymax = ucl), alpha = 0.25) +
-  geom_line(aes(y = fit)) +
-  geom_point(data = intdf, aes(y = prop))
-
-#TODO: Figure out how to make/plot global predictions (just the s(day_of_year) term)
-  # See if emmeans or marginaleffects packages will be helpful.
-#TODO: Look into model checking/diagnostics (DHARMa package?)
 ```
+
+Just a couple proportion models had convergence issues, and these occurred when the number of plants and/or years was tiny so not a big deal. Will remove them from consideration
+
+
 
 ```{r mgcv-old}
 #| eval: false

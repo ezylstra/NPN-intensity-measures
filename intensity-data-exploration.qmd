@@ -1188,8 +1188,6 @@ for (i in 1:nrow(proportions)) {
 
 Just a couple proportion models had convergence issues, and these occurred when the number of plants and/or years was tiny so not a big deal. Will remove them from consideration
 
-
-
 ```{r mgcv-old}
 #| eval: false
 

@@ -265,6 +265,7 @@ site_spp_t <- site_spp %>%
       align = c(rep("r", 3), rep("c", 4))) %>%
   kable_styling(full_width = FALSE, font_size = 11)
 site_spp_t
+# write.table(site_spp_t, "clipboard", row.names = FALSE)
 ```
 
 ```{r summarize-intensity-cats}
@@ -495,6 +496,7 @@ php_summary_t <- php_summary %>%
       align = c(rep("r", 2), rep("c", 5))) %>%
   kable_styling(full_width = FALSE, font_size = 11)
 php_summary_t
+# write.table(php_summary_t, "clipboard", row.names = FALSE)
 ```
 
 ## Using GAMs to describe seasonal changes in phenophase intensity
@@ -595,6 +597,7 @@ gam_data_t <- combos %>%
       align = c(rep("r", 3), rep("c", 3))) %>%
   kable_styling(full_width = FALSE, font_size = 11)
 gam_data_t
+# write.table(gam_data_t, "clipboard", row.names = FALSE)
 ```
 
 ```{r models-count-data}

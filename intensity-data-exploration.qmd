@@ -708,14 +708,13 @@ for (i in 1:nrow(counts)) {
     # original data or newdata
 
     # Model with annual smooths and NO global smooth ("S" model in Pedersen)
-    # m_s <- gam(midpoint_adj ~ s(day_of_year, fyr, k = kval, bs = "fs", 
-    #                             xt = list(bs = cubic_bs)), 
+    # m_s <- gam(midpoint_adj ~ s(day_of_year, fyr, k = kval, bs = "fs",
+    #                             xt = list(bs = cubic_bs)),
     #            weights = n_indiv/mean(n_indiv),
-    #            data = counts_yragg, method = "REML", 
+    #            data = counts_yragg, method = "REML",
     #            family = Gamma(link = "log"), select = TRUE)
     # summary(m_s)
     # plot_predictions(m_s, by = c("day_of_year", "fyr"))
-    # Annual smooths look very similar to those from GS model
     
     # Model with only a global smooth ("G" model in Pedersen; but keeping a 
     # yearly random effect in the model).
@@ -916,54 +915,6 @@ for (i in 1:nrow(counts)) {
            height = 4,
            units = "in")
     
-    # Evaluate how intensity curve varies from curve explaining weekly 
-    # proportion of plants in phase?
-      # intdf_status <- intdf %>%
-      #   mutate(wk = week(observation_date)) %>%
-      #   group_by(individual_id, fyr, wk) %>%
-      #   summarize(status = max(phenophase_status), .groups = "keep") %>%
-      #   group_by(fyr, wk) %>%
-      #   summarize(prop = sum(status) / n(),
-      #             n_plants = n(),
-      #             .groups = "keep") %>%
-      #   data.frame() %>%
-      #   mutate(doy = wk * 7 - 3) %>%
-      #   filter(wk < 53)
-      # 
-      # m_prop <- gam(prop ~ s(doy, k = kval, bs = cubic_bs),
-      #               weights = n_plants,
-      #               data = intdf_status, family = binomial,
-      #               method = "REML")
-      # summary(m_prop)
-      # 
-      # invlogit <- function(x) {
-      #   exp(x) / (1 + exp(x))
-      # }
-      # 
-      # preds_prop <- plot_predictions(m_prop, by = "doy", draw = FALSE,
-      #                                type = "link", transform = invlogit) %>%
-      #   select(doy, estimate, conf.low, conf.high) %>%
-      #   rename(day_of_year = doy,
-      #          fitted = estimate,
-      #          lwr_ci = conf.low,
-      #          upr_ci = conf.high)
-      # 
-      # p_prop <- ggplot(data = preds_prop, aes(x = day_of_year, y = fitted)) +
-      #   geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.4) +
-      #   geom_line() +
-      #   scale_x_continuous(limits = c(0, 365)) +
-      #   labs(y = "Proportion of plants in phase") +
-      #   theme_bw() +
-      #   theme(axis.text.x = element_blank(),
-      #         axis.title.x = element_blank())
-      # p_int <- ggplot(data = preds_g, aes(x = day_of_year, y = fitted)) +
-      #   geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.4) +
-      #   geom_line() +
-      #   scale_x_continuous(limits = c(0, 365)) +
-      #   labs(y = intdf$intensity_label[1], x = "Day of year") +
-      #   theme_bw()
-      # 
-      # plot_grid(p_prop, p_int, ncol = 1, align = "v", axis = "lr")
   }
 }
 
@@ -1077,7 +1028,7 @@ for (i in 1:nrow(proportions)) {
     gams$convergence[row1] <- m_g$fit$convergence 
     
     # Extract inverse link function
-    ilink <- family(m_g)$linkinv
+    ilink <- family(m_gs)$linkinv
     
     # Global preds from G model
     newdata_g <- data.frame(
@@ -1189,7 +1140,282 @@ for (i in 1:nrow(proportions)) {
 
 ```
 
-Just a couple proportion models had convergence issues, and these occurred when the number of plants and/or years was tiny so not a big deal. Will remove them from consideration
+```{r status-vs-intensity-1}
+
+# List of proportion intensity categories
+proportions <- gamdf %>%
+  filter(intensity_type == "percent") %>%
+  distinct(class_id, phenophase_description, intensity_label)
+
+i = 5 # Open flowers
+
+# Extract data for that intensity category
+prop1 <- filter(gamdf, intensity_label == proportions$intensity_label[i] &
+                  phenophase_description == proportions$phenophase_description[i])
+spps <- sort(unique(prop1$common_name))
+spp <- spps[9] # Velvet mesquite
+
+# Extract data for that species
+intdf <- filter(prop1, common_name == spp)
+  
+# Make variables into factors
+intdf$fyr <- factor(intdf$yr)
+
+# Convert percentages to proportions
+intdf <- intdf %>%
+  mutate(prop = intensity_midpoint / 100)
+
+# Aggregate data across individual plants within a year
+props_yragg <- intdf %>%
+  group_by(fyr, yr, day_of_year, prop) %>%
+  summarize(n_indiv = n(), .groups = "keep") %>%
+  data.frame()
+
+# Set k value
+kval <- 10
+    
+# Logical indicating whether to use a cyclic smooth (when observation date
+# range starts in first two weeks of the year and ends in the last two weeks)
+cubic_bs <- ifelse(min(intdf$day_of_year) <= 14 & max(intdf$day_of_year >= (365 - 14)),
+                   "cc", "cr")
+
+# Model with only a global smooth
+m_g <- glmmTMB(prop ~ s(day_of_year, k = kval, bs = cubic_bs),
+               weights = n_indiv/mean(n_indiv),
+               data = props_yragg, REML = TRUE, family = ordbeta)
+ilink <- family(m_g)$linkinv
+
+# Global preds from G model
+newdata_g <- data.frame(
+  day_of_year = seq(min(props_yragg$day_of_year), max(props_yragg$day_of_year)),
+    n_indiv = NA)
+preds_g <- predict(m_g, newdata_g, type = "link", se.fit = TRUE)
+preds_g <- cbind(newdata_g, preds_g)
+preds_g <- preds_g %>%
+  mutate(lwr_ci = ilink(fit - (2 * se.fit)),
+         upr_ci = ilink(fit + (2 * se.fit)),
+         fitted = ilink(fit))
+
+# Evaluate how intensity curve varies from curve explaining weekly 
+# proportion of plants in phase?
+intdf_status <- intdf %>%
+  mutate(wk = week(observation_date)) %>%
+  group_by(individual_id, fyr, wk) %>%
+  summarize(status = max(phenophase_status), .groups = "keep") %>%
+  group_by(fyr, wk) %>%
+  summarize(prop = sum(status) / n(),
+            n_plants = n(),
+            .groups = "keep") %>%
+  data.frame() %>%
+  mutate(doy = wk * 7 - 3) %>%
+  filter(wk < 53)
+
+m_prop <- gam(prop ~ s(doy, k = kval, bs = cubic_bs),
+              weights = n_plants,
+              data = intdf_status, family = binomial,
+              method = "REML")
+summary(m_prop)
+
+invlogit <- function(x) {
+  exp(x) / (1 + exp(x))
+}
+
+newdata_p <- newdata_g %>%
+  rename(n_plants = n_indiv,
+         doy = day_of_year)
+preds_p <- predict(m_prop, newdata_p, type = "link", se.fit = TRUE)
+preds_p <- cbind(newdata_p, preds_p)
+preds_p <- preds_p %>%
+  mutate(lwr_ci = invlogit(fit - (2 * se.fit)),
+         upr_ci = invlogit(fit + (2 * se.fit)),
+         fitted = invlogit(fit)) 
+
+p_prop <- ggplot(data = preds_p, aes(x = doy, y = fitted)) +
+    geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.4) +
+    geom_line() +
+    scale_x_continuous(limits = c(0, 365)) +
+    labs(y = "Proportion of plants in phase") +
+    theme_bw() +
+    theme(axis.text.x = element_blank(),
+          axis.title.x = element_blank())
+p_int <- ggplot(data = preds_g, aes(x = day_of_year, y = fitted)) +
+    geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.4) +
+    geom_line() +
+    scale_x_continuous(limits = c(0, 365)) +
+    labs(y = intdf$intensity_label[1], x = "Day of year") +
+    theme_bw()
+plot_grid(p_prop, p_int, ncol = 1, align = "v", axis = "lr")
+
+```
+
+```{r status-vs-intensity-2}
+
+# List of proportion intensity categories
+proportions <- gamdf %>%
+  filter(intensity_type == "percent") %>%
+  distinct(class_id, phenophase_description, intensity_label)
+
+i = 4 # Canopy color
+
+# Extract data for that intensity category
+prop1 <- filter(gamdf, intensity_label == proportions$intensity_label[i] &
+                  phenophase_description == proportions$phenophase_description[i])
+spps <- sort(unique(prop1$common_name))
+spp <- spps[2] # Dwarf birch
+
+# Extract data for that species
+intdf <- filter(prop1, common_name == spp)
+  
+# Make variables into factors
+intdf$fyr <- factor(intdf$yr)
+
+# Convert percentages to proportions
+intdf <- intdf %>%
+  mutate(prop = intensity_midpoint / 100)
+
+# Aggregate data across individual plants within a year
+props_yragg <- intdf %>%
+  group_by(fyr, yr, day_of_year, prop) %>%
+  summarize(n_indiv = n(), .groups = "keep") %>%
+  data.frame()
+
+# Set k value
+kval <- 10
+    
+# Logical indicating whether to use a cyclic smooth (when observation date
+# range starts in first two weeks of the year and ends in the last two weeks)
+cubic_bs <- ifelse(min(intdf$day_of_year) <= 14 & max(intdf$day_of_year >= (365 - 14)),
+                   "cc", "cr")
+
+# Model with only a global smooth
+m_g <- glmmTMB(prop ~ s(day_of_year, k = kval, bs = cubic_bs),
+               weights = n_indiv/mean(n_indiv),
+               data = props_yragg, REML = TRUE, family = ordbeta)
+ilink <- family(m_g)$linkinv
+
+# Global preds from G model
+newdata_g <- data.frame(
+  day_of_year = seq(min(props_yragg$day_of_year), max(props_yragg$day_of_year)),
+    n_indiv = NA)
+preds_g <- predict(m_g, newdata_g, type = "link", se.fit = TRUE)
+preds_g <- cbind(newdata_g, preds_g)
+preds_g <- preds_g %>%
+  mutate(lwr_ci = ilink(fit - (2 * se.fit)),
+         upr_ci = ilink(fit + (2 * se.fit)),
+         fitted = ilink(fit))
+
+# Evaluate how intensity curve varies from curve explaining weekly 
+# proportion of plants in phase?
+intdf_status <- intdf %>%
+  mutate(wk = week(observation_date)) %>%
+  group_by(individual_id, fyr, wk) %>%
+  summarize(status = max(phenophase_status), .groups = "keep") %>%
+  group_by(fyr, wk) %>%
+  summarize(prop = sum(status) / n(),
+            n_plants = n(),
+            .groups = "keep") %>%
+  data.frame() %>%
+  mutate(doy = wk * 7 - 3) %>%
+  filter(wk < 53)
+
+m_prop <- gam(prop ~ s(doy, k = kval, bs = cubic_bs),
+              weights = n_plants,
+              data = intdf_status, family = binomial,
+              method = "REML")
+summary(m_prop)
+
+invlogit <- function(x) {
+  exp(x) / (1 + exp(x))
+}
+
+newdata_p <- newdata_g %>%
+  rename(n_plants = n_indiv,
+         doy = day_of_year)
+preds_p <- predict(m_prop, newdata_p, type = "link", se.fit = TRUE)
+preds_p <- cbind(newdata_p, preds_p)
+preds_p <- preds_p %>%
+  mutate(lwr_ci = invlogit(fit - (2 * se.fit)),
+         upr_ci = invlogit(fit + (2 * se.fit)),
+         fitted = invlogit(fit)) 
+
+p_prop <- ggplot(data = preds_p, aes(x = doy, y = fitted)) +
+    geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.4) +
+    geom_line() +
+    scale_x_continuous(limits = c(200, 300)) +
+    labs(y = "Proportion of plants in phase") +
+    theme_bw() +
+    theme(axis.text.x = element_blank(),
+          axis.title.x = element_blank())
+p_int <- ggplot(data = preds_g, aes(x = day_of_year, y = fitted)) +
+    geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.4) +
+    geom_line() +
+    scale_x_continuous(limits = c(200, 300)) +
+    labs(y = intdf$intensity_label[1], x = "Day of year") +
+    theme_bw()
+plot_grid(p_prop, p_int, ncol = 1, align = "v", axis = "lr")
+
+```
+
+```{r derived-metrics}
+
+# Can only use Ellen's data for open flowers (no. flowers * % open).
+# Start with 3 species
+dm <- si %>%
+  filter(site == "ellen") %>%
+  filter(phenophase_description %in% c("Flowers or flower buds", "Open flowers")) %>%
+  filter(common_name %in% c("crocus", "forsythia", "sugar maple")) %>%
+  select(individual_id, common_name, phenophase_description, observation_date, 
+         phenophase_status, yr, class_id, intensity_midpoint, intensity_label)
+dmw <- dm %>%
+  mutate(phenophase = ifelse(phenophase_description == "Flowers or flower buds",
+                             "flowers", "open")) %>%
+  rename(intensity = intensity_midpoint) %>%
+  tidyr::pivot_wider(
+    id_cols = c(individual_id, common_name, observation_date),
+    names_from = phenophase,
+    names_glue = "{phenophase}_{.value}",
+    values_from = c(phenophase_status, intensity)
+  ) %>%
+  mutate(nopen = round(flowers_intensity * open_intensity / 100)) %>%
+  filter(!is.na(nopen)) %>%
+  mutate(doy = yday(observation_date)) %>%
+  mutate(yr = year(observation_date)) %>%
+  data.frame() 
+# count(dmw, nopen)
+
+# Plot crocus data
+crocus <- dmw %>%
+  filter(common_name == "crocus") %>%
+  mutate(fyr = factor(yr))
+ggplot(data = crocus, aes(x = doy, y = nopen)) +
+  geom_line() +
+  facet_wrap(~fyr) +
+  labs(x = "Day of year", y = "No. open flowers", title = "Crocus")
+
+# Plot forsythia data
+forsyth <- dmw %>%
+  filter(common_name == "forsythia") %>%
+  mutate(fyr = factor(yr)) %>%
+  mutate(individual_id = factor(individual_id))
+ggplot(data = forsyth, aes(x = doy, y = nopen)) +
+  geom_line(aes(color = individual_id)) +
+  facet_wrap(~fyr) +
+  labs(x = "Day of year", y = "No. open flowers", title = "Forsythia",
+       color = "Plant ID")
+
+# Plot sugar maple data
+suma <- dmw %>%
+  filter(common_name == "sugar maple") %>%
+  mutate(fyr = factor(yr)) %>%
+  mutate(individual_id = factor(individual_id))
+ggplot(data = suma, aes(x = doy, y = nopen)) +
+  geom_line(aes(color = individual_id)) +
+  facet_wrap(~fyr) +
+  labs(x = "Day of year", y = "No. open flowers", title = "Sugar maple",
+       color = "Plant ID")
+
+```
+
 
 ```{r mgcv-old}
 #| eval: false
@@ -1595,17 +1821,5 @@ summary(m2trans)
 
 
 # }
-
-
-
-```
-
-```{r status-intensity-curves}
-
-
-```
-
-```{r derived-metrics}
-
 
 ```

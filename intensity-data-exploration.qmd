@@ -1414,6 +1414,23 @@ ggplot(data = suma, aes(x = doy, y = nopen)) +
   labs(x = "Day of year", y = "No. open flowers", title = "Sugar maple",
        color = "Plant ID")
 
+p_flowers <- ggplot(data = suma, aes(x = doy, y = flowers_intensity)) +
+  geom_line(aes(color = individual_id)) +
+  facet_wrap(~fyr) +
+  labs(x = "", y = "No. flowers", color = "Plant ID") +
+  theme(axis.title.x = element_blank())
+p_open <- ggplot(data = suma, aes(x = doy, y = open_intensity)) +
+  geom_line(aes(color = individual_id)) +
+  facet_wrap(~fyr) +
+  labs(x = "", y = "% Open", color = "Plant ID") +
+  theme(axis.title.x = element_blank())
+p_nopen <- ggplot(data = suma, aes(x = doy, y = nopen)) +
+  geom_line(aes(color = individual_id)) +
+  facet_wrap(~fyr) +
+  labs(x = "Day of year", y = "No. open", color = "Plant ID")
+suma_combined <- plot_grid(p_flowers, p_open, p_nopen, 
+                           ncol = 1, align = "v", axis = "lr")
+
 ```
 
 

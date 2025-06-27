@@ -439,6 +439,72 @@ spp_int <- gamdf %>%
 # head(spp_int)
 # write.table(spp_int, "clipboard", sep = "\t", row.names = FALSE)
 
+# Leaf size -------------------------------------------------------------------#
 
+leafs <- gamdf %>%
+  filter(intensity_label == "Leaf size (%)")
 
+(leafs_spp <- unique(leafs$common_name))
+# quaking aspen (4 yrs; 3141 obs)
+# dwarf birch (4 yrs; 2701 obs)
+# forsythia (4 yrs; 625 obs)
+# sugar maple (4 yrs; 527 obs)
 
+# Theoretically, leaf size (for deciduous plants with a single flush of leaves) 
+# is supposed to increase monotonically during phenophase. Does this seem to be
+# the case?
+
+leafs_sppyr <- leafs %>%
+  group_by(common_name, yr, individual_id) %>%
+  summarize(n_obs = n(),
+            min_doy = min(day_of_year),
+            max_doy = max(day_of_year),
+            n_yes = sum(phenophase_status),
+            first_yes = min(day_of_year[phenophase_status == 1]),
+            last_yes = max(day_of_year[phenophase_status == 1]),
+            n_yes_series = sum(rle(phenophase_status)$values == 1),
+            monotone_increase = 1*(unique(intensity_midpoint) == cummax(unique(intensity_midpoint))),
+            .groups = "keep") %>%
+  data.frame()
+
+leafs_byind <- leafs %>%
+  group_by(common_name, yr, individual_id) %>%
+  summarize(n_obs = n(),
+            min_doy = min(day_of_year),
+            max_doy = max(day_of_year),
+            n_yes = sum(phenophase_status),
+            first_yes = min(day_of_year[phenophase_status == 1]),
+            last_yes = max(day_of_year[phenophase_status == 1]),
+            # How many series of yeses (ideally, just one)
+            n_yes_series = sum(rle(phenophase_status)$values == 1),
+            vals = paste(rle(intensity_midpoint)$values[-length(rle(intensity_midpoint)$values)], collapse = ","),
+            # Do intensity values (except for the last 0) monotonically increase?
+            monotone_incr = all(as.integer(str_split(vals, ",")[[1]]) ==
+                                  cummax(as.integer(str_split(vals, ",")[[1]]))),
+            .groups = "keep") %>%
+  select(-vals) %>%
+  data.frame()
+
+leafs_sppyr <- leafs_byind %>%
+  group_by(common_name, yr) %>%
+  summarize(n_indiv = n(),
+            single_yes_series = sum(n_yes_series == 1),
+            single_yes_monontone = sum(n_yes_series == 1 & monotone_incr == TRUE),
+            .groups = "keep") %>%
+  data.frame()
+leafs_sppyr
+
+# Plots for one species
+leafss <- filter(leafs, common_name == leafs_spp[1])
+yrs <- unique(leafss$yr)
+for (j in 1:length(yrs)) {
+  leafss1 <- filter(leafss, yr == yrs[j])
+  ls_plot <- ggplot(data = leafss1, aes(x = day_of_year, y = intensity_midpoint)) +
+    geom_line() +
+    facet_wrap(~factor(individual_id)) +
+    labs(x = "Day of year", y = "% Leaf size", 
+         title = paste0(str_to_sentence(leafss1$common_name[1]),
+                        ", ", leafss1$yr[1])) +
+    theme_bw()
+  print(ls_plot)
+}

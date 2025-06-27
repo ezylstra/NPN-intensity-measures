@@ -442,7 +442,8 @@ spp_int <- gamdf %>%
 # Leaf size -------------------------------------------------------------------#
 
 leafs <- gamdf %>%
-  filter(intensity_label == "Leaf size (%)")
+  filter(intensity_label == "Leaf size (%)") %>%
+  mutate(prop = intensity_midpoint / 100)
 
 (leafs_spp <- unique(leafs$common_name))
 # quaking aspen (4 yrs; 3141 obs)
@@ -453,19 +454,6 @@ leafs <- gamdf %>%
 # Theoretically, leaf size (for deciduous plants with a single flush of leaves) 
 # is supposed to increase monotonically during phenophase. Does this seem to be
 # the case?
-
-leafs_sppyr <- leafs %>%
-  group_by(common_name, yr, individual_id) %>%
-  summarize(n_obs = n(),
-            min_doy = min(day_of_year),
-            max_doy = max(day_of_year),
-            n_yes = sum(phenophase_status),
-            first_yes = min(day_of_year[phenophase_status == 1]),
-            last_yes = max(day_of_year[phenophase_status == 1]),
-            n_yes_series = sum(rle(phenophase_status)$values == 1),
-            monotone_increase = 1*(unique(intensity_midpoint) == cummax(unique(intensity_midpoint))),
-            .groups = "keep") %>%
-  data.frame()
 
 leafs_byind <- leafs %>%
   group_by(common_name, yr, individual_id) %>%
@@ -488,10 +476,13 @@ leafs_byind <- leafs %>%
 leafs_sppyr <- leafs_byind %>%
   group_by(common_name, yr) %>%
   summarize(n_indiv = n(),
+            n_yesdates = round(mean(n_yes), 1),
             single_yes_series = sum(n_yes_series == 1),
-            single_yes_monontone = sum(n_yes_series == 1 & monotone_incr == TRUE),
+            single_yes_monotone = sum(n_yes_series == 1 & monotone_incr == TRUE),
             .groups = "keep") %>%
-  data.frame()
+  data.frame() %>%
+  mutate(percent_single_yes = round(single_yes_series / n_indiv, 2),
+         percent_single_mono = round(single_yes_monotone / n_indiv, 2))
 leafs_sppyr
 
 # Plots for one species
@@ -508,3 +499,128 @@ for (j in 1:length(yrs)) {
     theme_bw()
   print(ls_plot)
 }
+
+# Run models, 
+# Just for species in years when at least 50% of individuals had a single series of yeses
+# Just when the mean number of dates observed in phase is > 5
+leafs_combos <- leafs_sppyr %>%
+  filter(percent_single_yes > 0.5 & n_yesdates > 5)
+
+for (i in 1:nrow(leafs_combos)) {
+  spp <- leafs_combos$common_name[i]
+  sppyr <- leafs_combos$yr[i]
+  leafs1 <- leafs %>%
+    filter(common_name == spp & yr == sppyr) %>%
+    filter(prop != 0) %>%
+    mutate(individual_id = factor(individual_id))
+
+  agg <- leafs1 %>%
+    group_by(day_of_year, prop) %>%
+    summarize(n_indiv = n_distinct(individual_id), .groups = "keep") %>%
+    data.frame()
+  
+  m <- gam(prop ~ s(day_of_year, k = 5, bs = "cr") + s(individual_id, bs = "re"),
+           data = leafs1, method = "REML", family = betar(link="logit"), select = TRUE)
+  # summary(m)
+  
+  # plot_predictions(m, by = c("day_of_year", "individual_id"))
+  # plot_predictions(m, by = "day_of_year") +
+  #   geom_point(data = agg, aes(x = day_of_year, y = prop, size = n_indiv), color = "gray") +
+  #   theme_bw()
+
+  plot_dat <- data.frame(
+    day_of_year = seq(min(leafs1$day_of_year), max(leafs1$day_of_year)),
+    individual_id = leafs1$individual_id[1]
+  )
+  
+  ilink <- family(m)$linkinv
+  preds <- predict(m, newdata = plot_dat, type = "link", 
+                   se.fit = TRUE, exclude = "s(individual_id)")
+  preds <- cbind(plot_dat, preds)
+  preds <- preds %>%
+    mutate(lwr_ci = ilink(fit - (2 * se.fit)),
+           upr_ci = ilink(fit + (2 * se.fit)),
+           fitted = ilink(fit))
+  
+  pred_plot <- ggplot(data = preds, aes(x = day_of_year, y = fitted)) +
+    geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.2) +
+    # geom_line(data = leafs1, 
+    #           aes(x = day_of_year, y = prop, color = individual_id),
+    #           alpha = 0.3,
+    #           show.legend = FALSE) +
+    geom_point(data = agg,
+               aes(x = day_of_year, y = prop, size = n_indiv),
+               shape = 16, alpha = 0.7, color = "forestgreen") +
+    geom_line() +
+    labs(x = "Day of year",
+         y = "Proportion of full leaf size",
+         size = "No. plants",
+         title = paste0(str_to_sentence(leafs1$common_name[1]),
+                        ", ", leafs1$yr[1])) +
+    theme_bw()
+  
+  print(pred_plot)
+  
+}
+
+# Model multiple years at once? Try forythia, which has 4 years of data
+forsyth <- leafs %>%
+  filter(common_name == "forsythia") %>%
+  filter(prop != 0) %>%
+  mutate(individual_id = factor(individual_id)) %>%
+  mutate(fyr = factor(yr))
+
+agg_forsyth <- forsyth %>%
+  group_by(day_of_year, prop) %>%
+  summarize(n_obs = n(), .groups = "keep") %>%
+  data.frame()
+
+m2 <- gam(prop ~ s(day_of_year, k = 5, bs = "cr") + 
+            s(day_of_year, fyr, bs = "fs", xt = list(bs = "cr")) +
+            s(individual_id, bs = "re"),
+          data = forsyth, method = "REML", family = betar(link="logit"), 
+          select = TRUE)
+summary(m2)
+
+plot_dat2 <- data.frame(
+  day_of_year = rep(seq(min(forsyth$day_of_year), max(forsyth$day_of_year)), 4),
+  fyr = rep(c(2020, 2021, 2023, 2024), each = max(forsyth$day_of_year) - min(forsyth$day_of_year) + 1),
+  individual_id = forsyth$individual_id[1]
+)
+
+ilink <- family(m2)$linkinv
+preds <- predict(m2, newdata = plot_dat2, type = "link", 
+                 se.fit = TRUE, exclude = "s(individual_id)")
+preds <- cbind(plot_dat2, preds)
+preds <- preds %>%
+  mutate(lwr_ci = ilink(fit - (2 * se.fit)),
+         upr_ci = ilink(fit + (2 * se.fit)),
+         fitted = ilink(fit)) %>%
+  mutate(fyr = factor(fyr))
+
+ggplot(preds, aes(x = day_of_year, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci, fill = fyr), alpha = 0.3) +
+  geom_line(aes(color = fyr))
+
+m3 <- gam(prop ~ s(day_of_year, k = 5, bs = "cr") + s(fyr, individual_id, bs = "re"),
+          data = forsyth, method = "REML", family = betar(link="logit"), 
+          select = TRUE)
+summary(m3)
+
+predsG <- predict(m3, newdata = filter(plot_dat2, fyr == 2020), type = "link", 
+                 se.fit = TRUE, exclude = "s(fyr,individual_id)")
+predsG <- cbind(filter(plot_dat2, fyr == 2020), predsG)
+predsG <- predsG %>%
+  mutate(lwr_ci = ilink(fit - (2 * se.fit)),
+         upr_ci = ilink(fit + (2 * se.fit)),
+         fitted = ilink(fit)) %>%
+  mutate(fyr = factor(fyr))
+
+ggplot(preds, aes(x = day_of_year, y = fitted)) +
+  # geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci, fill = fyr), alpha = 0.3) +
+  geom_line(aes(color = fyr)) +
+  geom_ribbon(data = predsG, aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.3) +
+  geom_line(data = predsG, aes(y = fitted)) +
+  labs(x = "Day of year", y = "Proportion of full leaf size",
+       color = "Year", title = "Forsythia, leaf size (%)") +
+  theme_bw()

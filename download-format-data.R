@@ -2,7 +2,7 @@
 # consistently
 
 # ER Zylstra
-# 15 May 2025
+# 2 July 2025
 
 library(dplyr)
 library(stringr)
@@ -16,6 +16,28 @@ library(rnpn)
   # wkt <- spocc::bbox2wkt(bbox)
   # npn_stations_by_location(wkt) 
   
+# Kodiak NWR (network_id == 1257)
+  # Collected data at 12 sites to monitor berry (fruit) resources
+  # I think the data were collected via remote cameras that were checked every 3 or so days
+  # Species: Site IDs
+  # devilsclub: 53455, 53456
+  # oval-leaf blueberry: 53453, 53454
+  # red elderberry: 53457, 53458, 53459, 53460
+  # salmonberry: 53461, 53462, 53463, 53464
+  kodiak_sites <- npn_stations() %>%
+    filter(network_id == 1257) %>%
+    data.frame() %>%
+    rename(site_name = station_name,
+           site_id = station_id) %>%
+    mutate(site_short = paste0("KNWR", str_pad(1:12, 2, pad = "0"))) %>%
+    mutate(species = case_when(
+      str_detect(site_name, "Blueberry") ~ "oval-leaf blueberry",
+      str_detect(site_name, "Devilsclub") ~ "devilsclub",
+      str_detect(site_name, "Elderberry") ~ "red elderberry",
+      str_detect(site_name, "Salmonberry") ~ "salmonberry"
+    )) %>%
+    select(site_name, site_id, site_short, species)
+
 # NEON sites
   # All associated with network_id == 77, network_name = National Ecological Observatory Network (NEON)
   # Note that unlike other sites, NEON site IDs change annually when new data is imported.
@@ -47,6 +69,7 @@ library(rnpn)
     left_join(neons, by = "site_short")
   
   all_sites <- neon_sites %>%
+    rbind(kodiak_sites) %>%
     rbind(data.frame(site_name = "Home",
                      site_id = 2,
                      site_short = "ELLEN",
@@ -126,6 +149,17 @@ ph_2024 <- sort(unique(ph_int$phenophase_id))
 # Extract list of intensity categories that were used in 2024
 int_2024 <- sort(unique(ivalues$intensity_category_id))
 
+# Create phenophase and intensity dataframes that can be merged with 
+# status-intensity data
+ph_merge <- ph_int %>%
+  distinct(phenophase_id, class_id, class_name)
+ivalues_missing <- ivalues %>%
+  distinct(intensity_category_id, intensity_name, intensity_type) %>%
+  mutate(intensity_value = NA,
+         intensity_midpoint = NA) %>%
+  relocate(intensity_type, .after = "intensity_value")
+ivalues <- rbind(ivalues, ivalues_missing)
+
 # Load status-intensity data for each site and format -------------------------#
 
 for (site in unique(all_sites$site_short)) {
@@ -148,8 +182,8 @@ for (site in unique(all_sites$site_short)) {
     # Remove any records with unknown phenophase status
     filter(phenophase_status != -1) 
   
-  # For all NEON sites, extract data for species of interest. (Not sure what
-  # species will be most useful at Ellen's site)
+  # For all NEON and KWR sites, extract data for species of interest. 
+  # (Not sure what species will be most useful at Ellen's site)
   if (site != "ELLEN") {
     si <- si %>%
       filter(str_detect(common_name, 
@@ -166,15 +200,6 @@ for (site in unique(all_sites$site_short)) {
     filter(intensity_category_id %in% int_2024 | is.na(intensity_category_id))
 
   # Merge phenophase and intensity information with si 
-  ph_merge <- ph_int %>%
-    distinct(phenophase_id, class_id, class_name)
-  ivalues_missing <- ivalues %>%
-    distinct(intensity_category_id, intensity_name, intensity_type) %>%
-    mutate(intensity_value = NA,
-           intensity_midpoint = NA) %>%
-    relocate(intensity_type, .after = "intensity_value")
-  ivalues <- rbind(ivalues, ivalues_missing)
-  
   si <- si %>%
     select(-c(observation_id, observedby_person_id)) %>%
     left_join(ph_merge, by = "phenophase_id") %>%

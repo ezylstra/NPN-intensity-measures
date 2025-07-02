@@ -283,7 +283,7 @@ for (i in 1:nrow(intensity_cats)) {
     
     # Create filename for png
     spp_nospace <- str_replace_all(spp, " ", "_")
-    png_name <- paste0("output/intensities-by-spp-php-yr/intensities-",
+    png_name <- paste0("output/intensities-by-spp-php-yr/IntensityData-",
                        intensity_cats$intensity_short[i], "-", spp_nospace, 
                        ".png")
     

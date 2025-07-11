@@ -10,6 +10,7 @@ library(mgcv)
 library(marginaleffects)
 library(glmmTMB)
 library(ordbetareg)
+library(MASS)
 
 
 # Plant phenophase classes
@@ -52,7 +53,7 @@ si <- si %>%
   arrange(individual_id, observation_date, phenophase_id, 
           desc(phenophase_status), desc(intensity_midpoint)) %>%
   distinct(individual_id, phenophase_id, observation_date, .keep_all = TRUE) %>%
-  select(-n_obs)
+  dplyr::select(-n_obs)
 
 # Doublecheck that there's only one observation of each plant-phenophase per day
 if (nrow(si) != nrow(distinct(si, individual_id, 
@@ -91,7 +92,7 @@ si <- si %>%
     is.na(interval_raw) ~ NA,
     .default = interval_raw
   )) %>%
-  select(-c(interval_raw, same_ind, same_php, same_yr))
+  dplyr::select(-c(interval_raw, same_ind, same_php, same_yr))
   
 # si %>% count(interval) %>% mutate(prop = n / 40686)
 # Vast majority (98%) of intervals are 3 days
@@ -127,10 +128,10 @@ pl_ph_yr <- pl_ph_yr %>%
     .default = 0
   ))
 si <- si %>%
-  left_join(select(pl_ph_yr, individual_id, phenophase_description, yr, remove),
+  left_join(dplyr::select(pl_ph_yr, individual_id, phenophase_description, yr, remove),
             by = c("individual_id", "phenophase_description", "yr")) %>%
   filter(remove == 0) %>%
-  select(-remove)
+  dplyr::select(-remove)
 
 # Check that there's only one intensity category for each species-phenophase?
 spil <- si %>%
@@ -145,7 +146,7 @@ spl <- si %>%
 si <- si %>%
   mutate(intensity_midpoint = ifelse(phenophase_status == 0, 
                                      0, intensity_midpoint)) %>%
-  select(-c(intensity_name, intensity_type, intensity_label)) %>%
+  dplyr::select(-c(intensity_name, intensity_type, intensity_label)) %>%
   left_join(spil, by = c("common_name", "phenophase_description"))
 
 # Summarize data by species ---------------------------------------------------#
@@ -184,7 +185,7 @@ intensity_cats <- si %>%
             .groups = "keep") %>%
   mutate(unique_values = ifelse(intensity_type == "qualitative", 
                                 valuesq, values)) %>%
-  select(-c(values, valuesq)) %>%
+  dplyr::select(-c(values, valuesq)) %>%
   data.frame()
 
 # Create short name for intensity categories
@@ -235,7 +236,7 @@ php_summary <- pl_ph_yr %>%
             prop_00 = round(sum(first_status == 0 & last_status == 0)/n_plantyrs, 2),
             .groups = "keep") %>%
   data.frame()
-# write.table(select(php_summary, -class_id), 
+# write.table(dplyr::select(php_summary, -class_id), 
 #             "clipboard", sep = "\t", row.names = FALSE)
 
 # Plot raw intensity data -----------------------------------------------------#
@@ -315,7 +316,7 @@ for (i in 1:nrow(intensity_cats)) {
 # Look at blueberry data (Road 1) in 2019
 blue19 <- si %>%
   filter(common_name == "oval-leaf blueberry" & yr == 2019) %>%
-  select(site_name, observation_date, day_of_year, interval, 
+  dplyr::select(site_name, observation_date, day_of_year, interval, 
          class_id, phenophase_status, 
          intensity_label, intensity_type, intensity_midpoint, 
          intensity_midpoint_log) %>%
@@ -335,7 +336,7 @@ ggplot(filter(blue19, class_id %in% fruit_classes),
 
 blue19 %>%
   filter(name == "Road1" & day_of_year %in% 160:244) %>%
-  select(intensity_label, observation_date, day_of_year, phenophase_status) %>%
+  dplyr::select(intensity_label, observation_date, day_of_year, phenophase_status) %>%
   arrange(observation_date)
 
 # Blueberry plant (Road 1) data in 2019 probably has some errors. Two periods
@@ -390,32 +391,158 @@ combos <- gamdf %>%
             n_yrs = n_distinct(yr),
             .groups = "keep") %>%
   data.frame()
-
-# Create dataframe to hold estimates from GAM models:
-combos_u <- combos %>%
-  select(class_id, intensity_label, intensity_type, common_name, n_plants) %>%
-  mutate(yr = NA)
-gams <- gamdf %>%
-  group_by(class_id, intensity_label, intensity_type, common_name, yr) %>%
-  summarize(n_plants = n_distinct(individual_id),
-            .groups = "keep") %>%
-  data.frame() %>%
-  rbind(combos_u) %>%
-  arrange(class_id, common_name, yr) %>%
-  mutate(k = NA,
-         smooth = NA,
-         model = NA,
-         fyrs_p = NA,
-         aic = NA,
-         devexpl = NA,
-         kcheck = NA,
-         peak_date = NA, 
-         peak_value = NA,
-         convergence = NA)
-# write.table(select(combos, -class_id), "clipboard", 
+# write.table(dplyr::select(combos, -class_id), "clipboard", 
 #             sep = "\t", row.names = FALSE)
 
-# Model exploration for no. fruits dataset ------------------------------------#
+# -----------------------------------------------------------------------------#
+# Exploring variation in max counts for fruit phenophase ----------------------#
+
+fruit <- gamdf %>%
+  filter(intensity_label == "No. fruits") %>%
+  dplyr::select(common_name, individual_id, latitude, longitude, 
+         phenophase_description, observation_date, yr, day_of_year,
+         phenophase_status, amended_status, intensity_label, 
+         intensity_midpoint) %>%
+  rename(status = phenophase_status,
+         phenophase = phenophase_description,
+         id = individual_id,
+         lat = latitude,
+         lon = longitude,
+         obsdate = observation_date, 
+         doy = day_of_year)
+
+# Distribution of intensity values
+count(fruit, intensity_midpoint) %>%
+  mutate(prop = n / sum(n))
+
+# Aggregate data for each plant-year
+fruit_py <- fruit %>%
+  group_by(common_name, id, lat, lon, yr) %>%
+  summarize(n_obs = n(),
+            n_inphase = sum(status),
+            max_count = max(intensity_midpoint),
+            .groups = "keep") %>%
+  data.frame()
+fruit_py
+count(fruit_py, max_count)
+# 0:                     0/50
+# Less than 3 (1):       3/50
+# 3 to 10 (5):           5/50
+# 11 to 100 (50):       17/50
+# 101 to 1000 (500):    15/50
+# 1001 to 10000 (5000): 10/50
+
+# Not sure about grouping, but for now will try:
+# 1-5 (few), 50 (some), 500 (many), 5000 (lots) [Don't need "none" group]
+fruit_py <- fruit_py %>%
+  mutate(abund = case_when(
+    max_count == 1 ~ "few",
+    max_count == 5 ~ "few",
+    max_count == 50 ~ "some",
+    max_count == 500 ~ "many",
+    max_count == 5000 ~ "lots"
+  )) %>%
+  mutate(abund = factor(abund, levels = c("few", "some", "many", "lots")))
+
+# Visualize for each species, year
+fruit_pya <- fruit_py %>%
+  group_by(common_name, fyr, abund) %>%
+  summarize(n = n(), .groups = "keep") %>%
+  data.frame()
+ggplot(fruit_pya, aes(x = abund, y = fyr)) +
+  geom_point(aes(size = n)) +
+  facet_wrap(~common_name)
+
+# Test run with MASS::polr
+fruit_py$common_name <- factor(fruit_py$common_name)
+fruit_py$fyr <- factor(fruit_py$yr)
+
+# By default, logistic regression (could change to probit)
+m1 <- polr(abund ~ common_name, Hess = TRUE, data = fruit_py)
+  summary(m1)
+  # p-values (really only valid for larger sample sizes)
+  ctable <- coef(summary(m1))
+  p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+  (ctable <- cbind(ctable, "p value" = round(p, 3)))
+  # confidence intervals (profiling likelihood function)
+  ci <- confint(m1)
+  # confidence intervals (assuming normality)
+  ci <- confint.default(m1)
+  # Odds ratios
+  exp(cbind(OR = coef(m1), ci))
+  
+  # Predicted probabilities (could include new values for continuous covs in model)
+  newdat <- data.frame(
+    common_name = sort(unique(fruit_py$common_name))
+  )
+  newdat <- cbind(newdat, round(predict(m1, newdat, type = "probs"), 3))
+  newdat  
+  
+  # Mean rank/category for each species
+  summary(lsmeans::lsmeans(m1, pairwise ~ common_name, mode = "mean"), type="response")$lsmeans
+
+m2 <- polr(abund ~ fyr, Hess = TRUE, data = fruit_py)
+summary(m2)
+
+m3 <- polr(abund ~ common_name + fyr, Hess = TRUE, data = fruit_py)
+# Error about optim and initial value in "vmmin". Providing starting values can help
+starts <- c(m1$coefficients, rep(0, 7), m1$zeta)
+m3 <- polr(abund ~ common_name + fyr, Hess = TRUE, data = fruit_py, start = starts)
+summary(m3)
+
+AIC(m1, m2, m3)
+
+# Clear evidence that max fruit counts are higher for devil's club and 
+# elderberry than they are for blueberry and salmonberry, but the year effect 
+# is not consistent. I'm not sure these models are that helpful given that
+# there are few replicates (plants of same species in same year). Might work 
+# better if we could replace year with some measure of climate for each site
+# and year (some sites ~100 km apart), but even then, might be better with 
+# dataset that had more plants
+
+# -----------------------------------------------------------------------------#
+# Exploring variation in max counts for fruit phenophase ----------------------#
+
+flowers <- gamdf %>%
+  filter(intensity_short == "Flowers") %>%
+  dplyr::select(common_name, individual_id, latitude, longitude, 
+                phenophase_description, observation_date, yr, day_of_year,
+                phenophase_status, amended_status, intensity_label, 
+                intensity_midpoint) %>%
+  rename(status = phenophase_status,
+         phenophase = phenophase_description,
+         id = individual_id,
+         lat = latitude,
+         lon = longitude,
+         obsdate = observation_date, 
+         doy = day_of_year)
+
+# Distribution of intensity values
+count(flowers, intensity_midpoint) %>%
+  mutate(prop = n / sum(n))
+
+# Aggregate data for each plant-year
+flowers_py <- flowers %>%
+  group_by(common_name, id, lat, lon, yr) %>%
+  summarize(n_obs = n(),
+            n_inphase = sum(status),
+            max_count = max(intensity_midpoint),
+            .groups = "keep") %>%
+  data.frame()
+flowers_py
+count(flowers_py, max_count)
+# 0:                     0/47
+# Less than 3 (1):       6/47
+# 3 to 10 (5):          10/47
+# 11 to 100 (50):       29/47
+# 101 to 1000 (500):     2/47
+
+# Here, there are so few max counts > 50 that I think it only makes sense to 
+# create 2 categories: few (1-5) and many (50-500). But now the question is 
+# less interesting and we can just use logistic regression.
+
+# -----------------------------------------------------------------------------#
+# Explore seasonal variation in no. fruit with different models ---------------#
 
 int_label <- "No. fruits"
 spps <- sort(unique(si$common_name))

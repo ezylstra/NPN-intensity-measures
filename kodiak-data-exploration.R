@@ -9,6 +9,7 @@ library(cowplot)
 library(mgcv)
 library(marginaleffects)
 library(glmmTMB)
+library(ordbetareg)
 
 
 # Plant phenophase classes
@@ -54,7 +55,8 @@ si <- si %>%
   select(-n_obs)
 
 # Doublecheck that there's only one observation of each plant-phenophase per day
-if (nrow(si) != nrow(distinct(si, individual_id, phenophase_id, observation_date))) {
+if (nrow(si) != nrow(distinct(si, individual_id, 
+                              phenophase_id, observation_date))) {
   warning("There is more than one observation of some plant phenophases at ",
           sitecap, " in a day")
 }
@@ -63,31 +65,33 @@ if (nrow(si) != nrow(distinct(si, individual_id, phenophase_id, observation_date
 # is reported? If so, change the status but add a column to note that the data
 # were amended.
 si <- si %>%
-  mutate(amended_status = ifelse(phenophase_status == 0 & !is.na(intensity_midpoint), 
+  mutate(amended_status = ifelse(phenophase_status == 0 & 
+                                   !is.na(intensity_midpoint), 
                                  1, 0)) %>%
-  mutate(phenophase_status = ifelse(phenophase_status == 0 & !is.na(intensity_midpoint),
+  mutate(phenophase_status = ifelse(phenophase_status == 0 & 
+                                      !is.na(intensity_midpoint),
                                     1, phenophase_status))
 
 # Calculate the interval between observations of the plant, phenophase
 si <- si %>%
   arrange(common_name, individual_id, phenophase_description, yr, day_of_year)
   
-  si$interval_raw <- c(NA, si$day_of_year[2:nrow(si)] - si$day_of_year[1:(nrow(si) - 1)])
-  same_ind <- 1 * (si$individual_id[2:nrow(si)] == si$individual_id[1:(nrow(si) - 1)])
-  same_php <- 1 * (si$phenophase_id[2:nrow(si)] == si$phenophase_id[1:(nrow(si) - 1)])
-  same_yr <- 1 * (si$yr[2:nrow(si)] == si$yr[1:(nrow(si) - 1)])
-  si$same_ind <- c(NA, same_ind)
-  si$same_php <- c(NA, same_php)
-  si$same_yr <- c(NA, same_yr)
-  si <- si %>%
-    mutate(interval = case_when(
-      same_ind == 0 ~ NA,
-      same_php == 0 ~ NA,
-      same_yr == 0 ~ NA,
-      is.na(interval_raw) ~ NA,
-      .default = interval_raw
-    )) %>%
-    select(-c(interval_raw, same_ind, same_php, same_yr))
+si$interval_raw <- c(NA, si$day_of_year[2:nrow(si)] - si$day_of_year[1:(nrow(si) - 1)])
+same_ind <- 1 * (si$individual_id[2:nrow(si)] == si$individual_id[1:(nrow(si) - 1)])
+same_php <- 1 * (si$phenophase_id[2:nrow(si)] == si$phenophase_id[1:(nrow(si) - 1)])
+same_yr <- 1 * (si$yr[2:nrow(si)] == si$yr[1:(nrow(si) - 1)])
+si$same_ind <- c(NA, same_ind)
+si$same_php <- c(NA, same_php)
+si$same_yr <- c(NA, same_yr)
+si <- si %>%
+  mutate(interval = case_when(
+    same_ind == 0 ~ NA,
+    same_php == 0 ~ NA,
+    same_yr == 0 ~ NA,
+    is.na(interval_raw) ~ NA,
+    .default = interval_raw
+  )) %>%
+  select(-c(interval_raw, same_ind, same_php, same_yr))
   
 # si %>% count(interval) %>% mutate(prop = n / 40686)
 # Vast majority (98%) of intervals are 3 days
@@ -228,7 +232,7 @@ php_summary <- pl_ph_yr %>%
             n_plantyrs = n(),
             n_states_mn = round(mean(n_states), 2),
             n_states_max = max(n_states),
-            prop_00 = round(sum(first_status == 0 & last_status == 0) / n_plantyrs, 2),
+            prop_00 = round(sum(first_status == 0 & last_status == 0)/n_plantyrs, 2),
             .groups = "keep") %>%
   data.frame()
 # write.table(select(php_summary, -class_id), 
@@ -411,7 +415,7 @@ gams <- gamdf %>%
 # write.table(select(combos, -class_id), "clipboard", 
 #             sep = "\t", row.names = FALSE)
 
-# No. fruits ------------------------------------------------------------------#
+# Model exploration for no. fruits dataset ------------------------------------#
 
 int_label <- "No. fruits"
 spps <- sort(unique(si$common_name))
@@ -422,183 +426,238 @@ counts_i <- filter(gamdf, intensity_label == int_label)
 # Extract data for one species
 spp <- spps[3]
 intdf <- filter(counts_i, common_name == spp)
+intdf$fyr <- factor(intdf$yr)
 
-  message("Running models for ", spp, ": ", intdf$intensity_label[1])
-  
-  # Identify the rows of gams dataframe associated with species & intensity
-  row1 <- which(gams$intensity_label == intdf$intensity_label[1] &
-                  gams$common_name == spp & is.na(gams$yr))
-  rowyrs <- which(gams$intensity_label == intdf$intensity_label[1] &
-                    gams$common_name == spp & !is.na(gams$yr))
+# Nudge intensity midpoint 0 values
+intdf <- intdf %>%
+  mutate(midpoint_adj = case_when(
+    intensity_midpoint == 0 ~ 0.01,
+    .default = intensity_midpoint
+  ))  
 
-  # Make variables into factors
-  intdf$fyr <- factor(intdf$yr)
-  intdf$individual_id <- factor(intdf$individual_id)
+message("Running models for ", spp, ": ", intdf$intensity_label[1])
+
+# Pick one year (year with 3 plants, different max values)?
+intdf1 <- filter(intdf, yr == 2021)
+intdf1$individual_id <- factor(intdf1$individual_id)
+
+# GAM (Gamma family after nudging 0s) -----------------------------------------#
+
+# Model with random effects for individual plants
+# Note: need to have sufficiently large k or predicted mean values get silly high
+mgam <- gam(midpoint_adj ~ s(day_of_year, bs = "cr", k = 20) + 
+              s(individual_id, bs = "re"), 
+            data = intdf1, method = "REML", 
+            family = Gamma(link = "log"), select = TRUE)
   
-  # Nudge intensity midpoint 0 values
-  intdf <- intdf %>%
-    mutate(midpoint_adj = case_when(
-      intensity_midpoint == 0 ~ 0.01,
-      .default = intensity_midpoint
-    ))  
+summary(mgam)
+gam.check(mgam)
+plot(mgam, pages = 1)
+
+# Plots -- why are they CIs so different (plot_predictions bigger)?
+plot(mgam, select = 1, trans = exp, shift = coef(mgam)[1],
+     rug = FALSE, se = TRUE, seWithMean = TRUE, unconditional = TRUE)
+plot_predictions(mgam, by = "day_of_year", exclude = "s(individual_id)",
+                 type = "link", transform = exp, points = 0.5)
+
+# Predictions by hand (CIs match up with plot_predictions, not plot.gam)
+ilink <- family(mgam)$linkinv
+newdata_g <- data.frame(
+  day_of_year = seq(min(intdf1$day_of_year), max(intdf1$day_of_year)),
+  individual_id = intdf1$individual_id[1])
+preds_g <- predict(mgam, newdata_g, type = "link", se.fit = TRUE, 
+                   exclude = "s(individual_id)")
+preds_g <- cbind(newdata_g, preds_g)
+preds_g <- preds_g %>%
+  mutate(lwr_ci = ilink(fit - (2 * se.fit)),
+         upr_ci = ilink(fit + (2 * se.fit)),
+         fitted = ilink(fit))
+ggplot(preds_g, aes(x = day_of_year, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.3) +
+  geom_point(data = intdf1, 
+             aes(x = day_of_year, y = intensity_midpoint, color = individual_id),
+             alpha = 0.3) +
+  geom_line() +
+  theme_bw()
+
+# Still not a great fit to the data, with a steeper peak that tops off at values
+# that seem too high (and way more so for CIs)
+
+# GAM for ordered categorical data (mgcv::gam with ocat family) ---------------#
+
+# Try using each unique values as a category (though we get similar results
+# if we group 1-50 values together)
+intdf1 <- intdf1 %>%
+  mutate(y = case_when(
+    intensity_midpoint == 0 ~ 1,
+    intensity_midpoint == 1 ~ 2,
+    intensity_midpoint == 5 ~ 3,
+    intensity_midpoint == 50 ~ 4,
+    intensity_midpoint == 500 ~ 5,
+    intensity_midpoint == 5000 ~ 6,
+  ))
+R <- length(unique(intdf1$y))
+
+mocat <- gam(y ~ s(day_of_year, bs = "cr", k = 20) + 
+               s(individual_id, bs = "re"), 
+             data = intdf1, method = "REML", 
+             family = ocat(R = R), select = TRUE)
+summary(mocat)
+gam.check(mocat)
+plot(mocat, pages = 1)
+
+# Plot predictions
+ilink <- family(mocat)$linkinv # Don't really need this (identity link)
+newdata_g <- data.frame(
+  day_of_year = seq(min(intdf1$day_of_year), max(intdf1$day_of_year)),
+  individual_id = intdf1$individual_id[1])
+preds_g <- predict(mocat, newdata = newdata_g, type = "link", se.fit = TRUE,
+                   exclude = "s(individual_id)")
+preds_g <- cbind(newdata_g, preds_g)
+preds_g <- preds_g %>%
+  mutate(lwr_ci = ilink(fit - (2 * se.fit)),
+         upr_ci = ilink(fit + (2 * se.fit)),
+         fitted = ilink(fit))
+
+cutpoints <- mocat$family$getTheta(TRUE)
+ggplot(preds_g, aes(x = day_of_year, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.3) +
+  geom_line() +
+  geom_hline(yintercept = cutpoints, linetype = "dashed") +
+  theme_bw()
+ggplot(preds_g, aes(x = day_of_year, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.3) +
+  geom_line() +
+  geom_hline(yintercept = cutpoints, linetype = "dashed") +
+  scale_y_continuous(limits = c(-2, 15)) +
+  theme_bw()
+# Interpretting this is tricky. Can predict dates that you're likely to
+# transition from one abundance category to the next, but that's not very 
+# intuitive.
   
-  # Aggregate data across individual plants within a year
-  counts_yragg <- intdf %>%
-    group_by(fyr, yr, day_of_year, intensity_midpoint, midpoint_adj) %>%
-    summarize(n_indiv = n(), .groups = "keep") %>%
-    data.frame()
+# Ordered beta regression (glmmTMB with ordbeta family) -----------------------#
+
+# Ordered beta regression is like a mixture model with cutpoints determining 
+# extreme categories (0ish, 1ish) and assuming a continuous response on (0, 1). 
+# Unlike zero-one inflated betas, don't need to specify separate models and 
+# parameters for 0, (0-1), and 1.
+
+# From help for glmmTMB: If your response variable is defined on the 
+# closed interval [a,b], need to first transform it to [0,1] via:
+# y_scaled <- (y-a)/(b-a)
+
+intdf1 <- intdf1 %>%
+  mutate(y_scaled = intensity_midpoint / max(intensity_midpoint))
+
+mob <- glmmTMB(y_scaled ~ s(day_of_year, k = 20) + (1|individual_id), 
+               data = intdf1, 
+               REML = TRUE, family = ordbeta)
+mob 
+# Note that upper cutpoint is 0.125, but that is between two highest 
+# categories (500 = 0.1; 5000 = 1)
+count(intdf1, intensity_midpoint, y_scaled) %>% format(scientific = FALSE)
+
+# Extract inverse link function
+ilink <- family(mob)$linkinv
+newdata_g <- data.frame(
+  day_of_year = seq(min(intdf1$day_of_year), max(intdf1$day_of_year)),
+  individual_id = NA)
+preds_g <- predict(mob, newdata_g, type = "link", se.fit = TRUE)
+preds_g <- cbind(newdata_g, preds_g)
+preds_g <- preds_g %>%
+  mutate(lwr_ci = ilink(fit - (2 * se.fit)),
+         upr_ci = ilink(fit + (2 * se.fit)),
+         fitted = ilink(fit))
+ggplot(preds_g, aes(x = day_of_year, y = fitted)) +
+  geom_ribbon(aes(ymin = lwr_ci, ymax = upr_ci), alpha = 0.3) +
+  geom_point(data = intdf1, 
+             aes(x = day_of_year, y = y_scaled, color = individual_id),
+             alpha = 0.3) +
+  geom_line() +
+  theme_bw()
+# Predicted values don't approach upper boundary, even when lots of observations
+# there (Doesn't seem to just be a 2021 issue. See similar things if I model 
+# data for all years)
+
+# Ordered beta regression (ordbetareg package) --------------------------------#
+
+# Done in a Bayesian framework using brms functions and Stan
+
+# Settings that we can tweak:
+  # Number of chains: 4 is default
+  # Number of cores: 1 is default
+  # Number of iterations per chain including warmup (iter): default is 2000
+  # Number of warmup iterations (warmup): default is iter/2
+  # Thinning rate (thin): default is 1
+  # Priors (eg, coef_prior_mean = 0, coef_prior_SD = 5)
+  # Knots (list containing specific values to be used for basis construction of smooothing terms)
+  # Initial values (init default is "0", but could use "random")
+  # Can set a seed
+  # Sampling parameters (used to eliminate or decrease number of divergent
+    # transitions). Best option is to use control = list(adapt_delta = X) 
+    # where X is something between 0.8 and 1. If get warning about tree depth 
+    # use control = list(max_treedepth = X) where X is > 10.
+
+  # Insufficient sampling, just to get a sense of what we've got
+  mobr <- ordbetareg(intensity_midpoint ~ s(day_of_year) + (1|individual_id),
+                     data = intdf1,
+                     true_bounds = c(0, 5000),
+                     cores = 3, 
+                     chains = 3,
+                     iter = 1000,
+                     control = list(adapt_delta = 0.95))
+  mobr
+  conditional_effects(mobr, effects = "day_of_year")    # This makes sense to me
+  conditional_smooths(mobr, smooths = "s(day_of_year)") # This does not
   
-  # From help for glmmTMB: If your response variable is defined on the 
-  # closed interval [a,b], transform it to [0,1] via y_scaled <- (y-a)/(b-a)
-  # Don't know whether this will work or not....
+  posterior_check <- pp_check_ordbeta(mobr, ndraws = 100)
+  posterior_check$discrete
+  posterior_check$continuous
   
-  intdf <- intdf %>%
-    mutate(y_scaled = intensity_midpoint / max(intensity_midpoint))
-  counts_yragg <- counts_yragg %>%
-    mutate(y_scaled = intensity_midpoint / max(intensity_midpoint))
-  # Tried to use y_scaled in lots of different forms, but nothing was working 
-  # consistently (see bottom of script)
-  
-  
-  
-  library(ordbetareg)
-  mobr <- ordbetareg(y_scaled ~ s(day_of_year),
-                     data = filter(intdf, yr == 2015),
-                     true_bounds = c(0, 1))
-  plot_predictions(mobr, by = "day_of_year")
-  
-  mobr2 <- ordbetareg(intensity_midpoint ~ s(day_of_year, by = fyr),
-                      data = intdf,
-                      true_bounds = c(0, 5000))
-  mobr2
-  plot_predictions(mobr2, by = c("day_of_year", "fyr", "fyr"))
-  # Getting warnings about divergent transitions, but on the whole, these
-  # don't look bad.
-  
-  mobr3 <- ordbetareg(intensity_midpoint ~ s(day_of_year, by = fyr) + (1|individual_id),
+  # All years:
+  # Here allowing different wiggliness each year. If wanted the same wiggliness, 
+  # then use s(doy, fyr, bs = 'fs'). See Pederson et al. 2019
+  mobr2 <- ordbetareg(intensity_midpoint ~ fyr + s(day_of_year, by = fyr) +
+                        (1|individual_id),
                       data = intdf,
                       true_bounds = c(0, 5000),
-                      cores = 2, chains = 2, 
-                      control=list(adapt_delta=0.95))
-  mobr3
-  plot_predictions(mobr3, by = c("day_of_year", "fyr", "fyr"))
-  # Come back to this. Not showing curves correctly in years with more than
-  # one individual....
-  
-  # Probably want to specify cores and chains
-  # Also, want to see about adding a random effect
-  # Need to look more into how visualize/summarize results 
-  # (though for now, I can at least use marginaleffects::plot_predictions)
-  
-  
-  
-  
-  
-  # Trying glmmTMB with ordbeta... --------------------------------------------#  
-  mtest <- glmmTMB(y_scaled ~ s(day_of_year, fyr, bs = "fs"), 
-                   data = intdf, 
-                   REML = TRUE, family = ordbeta)
-  plot_predictions(mtest, by = c("day_of_year", "fyr"), vcov = FALSE)
-  
-  myr <- glmmTMB(y_scaled ~ s(day_of_year, k = 30),
-                 weights = n_indiv,
-                 data = filter(counts_yragg, yr == 2022), 
-                 REML = TRUE, family = ordbeta)
-  plot_predictions(myr, by = c("day_of_year"), vcov = FALSE)
-  
-  glmmTMB(prop ~ s(day_of_year, k = kval, bs = cubic_bs) +
-            s(day_of_year, fyr, k = kval, bs = "fs", xt = list(bs = cubic_bs), m = 1), 
-          weights = n_indiv/mean(n_indiv),
-          data = props_yragg, REML = TRUE, family = ordbeta)
-  
-  
-  # Extract and save model settings
-  gams$k[c(rowyrs, row1)] <- kval
-  # gams$smooth[c(rowyrs, row1)] <- cubic_bs
-  
-  
-  
-  # Model with annual and global smooths ("GS" model in Pedersen et al. 2019).
-  # Wrapping call in suppressWarnings since these models always spit out a 
-  # warning about repeated 1-d smooths that we can safely ignore (according
-  # to Gavin Simpson)
-  suppressWarnings(
-    m_gs <- gam(midpoint_adj ~ s(day_of_year, k = kval) +
-                  s(day_of_year, fyr, k = kval, bs = "fs", m = 1), 
-                weights = n_indiv,
-                data = counts_yragg, method = "REML", 
-                family = Gamma(link = "log"), select = TRUE)
-  )
-  summary(m_gs)
-  plot(m_gs, pages = 1)
-  plot_predictions(m_gs, by = c("day_of_year", "fyr"))
-  
-  
-  
-  
-  
-  # Extract and save model results
-  gams$model[rowyrs] <- "GS"
-  gams$fyrs_p[rowyrs] <- summary(m_gs)$s.table[2,"p-value"]
-  gams$aic[rowyrs] <- round(AIC(m_gs), 2)
-  gams$devexpl[rowyrs] <- round(summary(m_gs)$dev.expl * 100, 1)
-  gams$kcheck[rowyrs] <- ifelse(any(k.check(m_gs)[, "p-value"] < 0.10),
-                                "problem", "ok")
-  
-  # Plot global smooth:
-  # plot(m_gs, select = 1)
-  # plot(m_gs, select = 1, trans = exp, shift = coef(m_gs)[1], 
-  #      rug = FALSE, se = FALSE)
-  # plot_predictions(m_gs, by = "day_of_year", exclude = "s(day_of_year,fyr)", 
-  #                  type = "link", transform = exp) 
-  # Note that the CI around the global effect is huge. Similar to: 
-  # https://stats.stackexchange.com/questions/645096/interpretation-help-of-summary-from-basic-gam-models-with-random-smooths 
-  # If we reduce both k's a lot, then the CI gets smaller, but the annual 
-  # smooths don't seem like they fit the data well at all and the gam.check 
-  # p-values are much smaller.
-  
-  # Using marginaleffects package to look at annual smooths. 
-  # (need to use link and transform arguments to calculate properly and 
-  # prevent CI's from extending below 0.)
-  # plot_predictions(m_gs, by = c("day_of_year", "fyr"), type = "link", transform = exp)
-  # plot_predictions(m_gs, by = c("day_of_year", "fyr", "fyr"), type = "link", transform = exp)
-  # Note: can get dataframe with estimates by including draw = FALSE for 
-  # original data or newdata
-  
-  # Model with annual smooths and NO global smooth ("S" model in Pedersen)
-  # m_s <- gam(midpoint_adj ~ s(day_of_year, fyr, k = kval, bs = "fs",
-  #                             xt = list(bs = cubic_bs)),
-  #            weights = n_indiv/mean(n_indiv),
-  #            data = counts_yragg, method = "REML",
-  #            family = Gamma(link = "log"), select = TRUE)
-  # summary(m_s)
-  # plot_predictions(m_s, by = c("day_of_year", "fyr"))
-  
-  # Model with only a global smooth ("G" model in Pedersen; but keeping a 
-  # yearly random effect in the model).
-  m_g <- gam(midpoint_adj ~ s(day_of_year, k = kval, bs = cubic_bs) + s(fyr, bs = "re"), 
-             weights = n_indiv/mean(n_indiv),
-             data = counts_yragg, method = "REML", 
-             family = Gamma(link = "log"), select = TRUE)
-  # summary(m_g)
-  # plot_predictions(m_g, by = c("day_of_year"))
-  # gam.check(m_g)
-  
-  # Extract and save model results
-  gams$model[row1] <- "G"
-  gams$aic[row1] <- round(AIC(m_g), 2)
-  gams$devexpl[row1] <- round(summary(m_g)$dev.expl * 100, 1)
-  gamcheck_pvalues <- k.check(m_g)[, "p-value"]
-  gamcheck_pvalues <- gamcheck_pvalues[!is.na(gamcheck_pvalues)]
-  gams$kcheck[row1] <- ifelse(any(gamcheck_pvalues < 0.10), "problem", "ok")
-  
-  if (gams$kcheck[row1] == "problem") {
-    warning("gam.check for ", spp, ":", counts$intensity_label[i],
-            " (G) indicates potential problems with model fit.")
-  }
-  if (any(gams$kcheck[rowyrs] == "problem")) {
-    warning("gam.check for ", spp, ":", counts$intensity_label[i],
-            " (GS) indicates potential problems with model fit.")
-  }
-  
+                      cores = 3, 
+                      chains = 3,
+                      iter = 1000,
+                      control = list(adapt_delta = 0.99))
+  mobr2
+  conditional_effects(mobr2, effects = "day_of_year:fyr")
+  plot_predictions(mobr2, condition = c("day_of_year", "fyr", "fyr")) 
 
+  # Just including year as a random effect?
+  mobr3 <- ordbetareg(intensity_midpoint ~ 
+                        s(day_of_year) +
+                        (1|fyr) +
+                        (1|individual_id),
+                      data = intdf,
+                      true_bounds = c(0, 5000),
+                      cores = 3, 
+                      chains = 3,
+                      iter = 1000,
+                      control = list(adapt_delta = 0.99,
+                                     max_treedepth = 15))
+  mobr3
+  conditional_effects(mobr3, effects = "day_of_year")
+  
+  # Stuff below is from ordbetareg vignette:
+  all_draws <- prepare_predictions(mobr)
+  cutzero <- plogis(all_draws$dpars$cutzero)
+  cutone <- plogis(all_draws$dpars$cutzero + exp(all_draws$dpars$cutone))
+  
+  intdf1 %>%
+    ggplot(aes(x = intensity_midpoint)) +
+    geom_histogram(bins = 100) +
+    theme_minimal() +
+    geom_vline(xintercept = mean(cutzero)*100,linetype=2) +
+    geom_vline(xintercept = mean(cutone)*100,linetype=2)
+  
+# ordbetareg package seems to give better results than the glmmTMB model with
+# ordbeta family. However, the ordbetareg/brms approach takes a lot longer and
+# can require some fussing to avoid warnings about diverent transitions and/or
+# max treedepth. Even with a "better" fit than glmmTMB, I still don't think 
+# that these models fit our overdispersed count data well. 

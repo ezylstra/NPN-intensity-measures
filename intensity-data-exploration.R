@@ -439,6 +439,49 @@ spp_int <- gamdf %>%
 # head(spp_int)
 # write.table(spp_int, "clipboard", sep = "\t", row.names = FALSE)
 
+# -----------------------------------------------------------------------------#
+# Exploring variation in max annual counts ------------------------------------#
+
+# Exploring with no. of young leaves on velvet mesquite
+veme <- gamdf %>%
+  filter(intensity_short == "YoungLeaves") %>%
+  filter(common_name == "velvet mesquite") %>%
+  dplyr::select(common_name, individual_id, latitude, longitude, 
+                phenophase_description, observation_date, yr, day_of_year,
+                phenophase_status, intensity_label, 
+                intensity_midpoint) %>%
+  rename(status = phenophase_status,
+         phenophase = phenophase_description,
+         id = individual_id,
+         lat = latitude,
+         lon = longitude,
+         obsdate = observation_date, 
+         doy = day_of_year)
+
+# Distribution of intensity values
+count(veme, intensity_midpoint) %>%
+  mutate(prop = n / sum(n))
+
+# Aggregate data for each plant-year
+veme_py <- veme %>%
+  group_by(common_name, id, yr) %>%
+  summarize(n_obs = n(),
+            n_inphase = sum(status),
+            max_count = max(intensity_midpoint),
+            .groups = "keep") %>%
+  data.frame()
+veme_py
+count(veme_py, max_count)
+# 0:                     0/100
+# Less than 3 (1):       0/100
+# 3 to 10 (5):           0/100
+# 11 to 100 (50):        1/100
+# 101 to 1000 (500):    61/100
+# 1001 to 10000 (5000): 38/100
+
+# Not really worth looking into too much given that there isn't too much
+# variation and there's only one site
+
 # Leaf size -------------------------------------------------------------------#
 
 leafs <- gamdf %>%

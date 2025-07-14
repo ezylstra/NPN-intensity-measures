@@ -2,7 +2,7 @@
 # consistently
 
 # ER Zylstra
-# 2 July 2025
+# 14 July 2025
 
 library(dplyr)
 library(stringr)
@@ -68,8 +68,27 @@ library(rnpn)
     mutate(site_short = str_sub(site_name, 1, 4)) %>%
     left_join(neons, by = "site_short")
   
+# McDowell Sonoran Conservancy (network_id == 622)
+  # Collected data at 5 sites (though two are "Training", "Beta Testing" that
+  # we'll ignore). Will download data from other sites separately since file 
+  # sizes are large
+
+  mcdo_sites <- npn_stations() %>%
+    filter(network_id == 622) %>%
+    data.frame() %>%
+    filter(station_name != "Training") %>%
+    filter(station_name != "Beta Testing") %>%
+    select(station_name, station_id) %>%
+    arrange(station_id) %>%
+    rename(site_name = station_name,
+           site_id = station_id) %>%
+    mutate(site_short = paste0("MCDO", 1:3), 
+           species = "various")
+
+# Combine all
   all_sites <- neon_sites %>%
     rbind(kodiak_sites) %>%
+    rbind(mcdo_sites) %>%
     rbind(data.frame(site_name = "Home",
                      site_id = 2,
                      site_short = "ELLEN",
@@ -183,8 +202,9 @@ for (site in unique(all_sites$site_short)) {
     filter(phenophase_status != -1) 
   
   # For all NEON and KWR sites, extract data for species of interest. 
-  # (Not sure what species will be most useful at Ellen's site)
-  if (site != "ELLEN") {
+  # (Not sure what species will be most useful at Ellen's site and will 
+  # keep data for all species at McDowell for now)
+  if (!site %in% c("ELLEN", paste0("MCDO", 1:3))) {
     si <- si %>%
       filter(str_detect(common_name, 
                         str_replace_all(all_sites$species[all_sites$site_short == site][1], 

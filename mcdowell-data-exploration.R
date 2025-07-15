@@ -12,7 +12,7 @@ leaf_classes <- 1:5
 flower_classes <- 6:9
 fruit_classes <- 10:13
 
-# List files with formatted intensity data from Kodiak
+# List files with formatted intensity data from McDowell
 intensity_files <- list.files("npn-data",
                               pattern = "intensity-siteMCDO",
                               full.names = TRUE)
@@ -197,7 +197,7 @@ intensity_cats <- intensity_cats %>%
     intensity_label == "No. flowers and flower buds" ~ "Flowers",
     intensity_label == "Open flowers (%)" ~ "OpenFlowers",
     intensity_label == "No. fruits" ~ "Fruits",
-    intensity_label == "Ripe fruit (%)" ~ "Ripe fruit",
+    intensity_label == "Ripe fruit (%)" ~ "RipeFruit",
     intensity_label == "No. fruit/seed drop" ~ "FruitDrop",
     .default = NA
   ))
@@ -327,7 +327,7 @@ si <- si %>%
   mutate(n_yrs = n_distinct(yr)) %>%
   ungroup() %>%
   filter(n_yrs > 1) %>%
-  select(-n_yrs) %>%
+  dplyr::select(-n_yrs) %>%
   data.frame()
 
 # Prep data for regression models ---------------------------------------------#
@@ -348,7 +348,7 @@ gamdf <- si %>%
     intensity_label == "No. flowers and flower buds" ~ "Flowers",
     intensity_label == "Open flowers (%)" ~ "OpenFlowers",
     intensity_label == "No. fruits" ~ "Fruits",
-    intensity_label == "Ripe fruit (%)" ~ "Ripe fruit",
+    intensity_label == "Ripe fruit (%)" ~ "RipeFruit",
     intensity_label == "No. fruit/seed drop" ~ "FruitDrop",
     .default = NA
   ))
@@ -898,6 +898,99 @@ count(filter(si, intensity_label == "No. fruits"),
   # the simplest (site) model has the lowest AIC. In last couple years, counts
   # at Brown's ranch were 500+ but counts at other sites were much lower.
   
+# -----------------------------------------------------------------------------#
+# Exploring variation in max counts for fruit drop phenophase -----------------#
   
+drop <- gamdf %>%
+  filter(intensity_short == "FruitDrop") %>%
+  dplyr::select(common_name, individual_id, site_name, latitude, longitude, 
+                phenophase_description, observation_date, yr, day_of_year,
+                phenophase_status, intensity_label, 
+                intensity_midpoint) %>%
+  rename(status = phenophase_status,
+         phenophase = phenophase_description,
+         id = individual_id,
+         lat = latitude,
+         lon = longitude,
+         obsdate = observation_date, 
+         doy = day_of_year)
+
+# Distribution of intensity values
+count(drop, intensity_midpoint) %>%
+  mutate(prop = n / sum(n))
+# A lot more 0s than flowers/fruit phenophases
+
+count(filter(si, intensity_label == "No. fruit/seed drop"), 
+      common_name, intensity_name, intensity_value)
+# Might be able to model multiple species together for this phenophase since
+# the "More than X" intensity category was very rarely used.
+
+  # Trying to model mutliple species together ---------------------------------#
+  # Keeping it to the 3 species I used for flowers, fruit
+  # Aggregate data for each plant-year and species
+  drop_py <- drop %>%
+    filter(common_name %in% c("buck-horn cholla", "saguaro", "jojoba")) %>%
+    group_by(common_name, id, site_name, lat, lon, yr) %>%
+    summarize(n_obs = n(),
+              n_inphase = sum(status),
+              max_count = max(intensity_midpoint),
+              .groups = "keep") %>%
+    data.frame()
+  count(filter(gamdf, intensity_short == "FruitDrop"),
+        intensity_midpoint, intensity_value)
+
+  count(drop_py, max_count)
+  # 0:                       0/116
+  # Less than 3 (1):        34/116
+  # 3 to 10 (5):            31/116
+  # 11 to 100 (50):         42/116
+  # 101 to 1000 (500):       6/116
+  # More than 1000 (1001):   2/116
+  # More than 10000 (10001): 1/116
   
-    
+  # Trying something, but not sure this is worth doing. I don't think there's 
+  # any justification for splitting 1 and 5, and I'm not sure there are enough
+  # observations to have the 500-10001 category....
+  # 1-5 (few), 50 (some), 500-10001 (many) [Don't need "none" group]
+  drop_py <- drop_py %>%
+    mutate(abund = case_when(
+      max_count %in% 1:5 ~ "few",
+      max_count == 50 ~ "some",
+      max_count > 50 ~ "many",
+    )) %>%
+    mutate(abund = factor(abund, levels = c("few", "some", "many")))
+  
+  # Visualize for each year
+  drop_pya <- drop_py %>%
+    mutate(fyr = factor(yr)) %>%
+    mutate(site = factor(site_name)) %>%
+    mutate(spp = factor(common_name)) %>%
+    group_by(spp, fyr, site, abund) %>%
+    summarize(n = n(), .groups = "keep") %>%
+    data.frame()
+  ggplot(drop_pya, aes(y = abund, x = fyr)) +
+    geom_point(aes(size = n)) +
+    facet_grid(site ~ spp) +
+    scale_y_discrete(labels = c("1-5", "50", "500+")) +
+    scale_size_continuous(breaks = 1:3) +
+    labs(x = "", y = "Abundance category", size = "No. plants", 
+         title = "3 species, fruit drop")
+  
+  drop_py$site <- factor(drop_py$site_name)
+  drop_py$fyr <- factor(drop_py$yr)
+  drop_py$spp <- factor(drop_py$common_name)
+  
+  m_site <- polr(abund ~ site, Hess = TRUE, data = drop_py)
+  summary(m_site)
+
+  m_spp <- polr(abund ~ spp, Hess = TRUE, data = drop_py)
+  summary(m_spp)
+  
+  m_fyr <- polr(abund ~ fyr, Hess = TRUE, data = drop_py)
+  summary(m_fyr)
+  
+  m_sitesppfyr <- polr(abund ~ site + spp + fyr, Hess = TRUE, data = drop_py)
+  summary(m_sitesppfyr)
+  
+  AIC(m_site, m_fyr, m_spp, m_sitesppfyr)
+  

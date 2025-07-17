@@ -92,22 +92,26 @@ si <- si %>%
 # Vast majority (97%) of intervals are <= 7 days
 # Most intervals (77%) <= 3 days
 
-# Summarize amount and quality of information for each plant, phenophase, year
-pl_ph_yr <- si %>%
-  group_by(common_name, individual_id, phenophase_description, yr) %>%
-  summarize(nobs = n(),
-            first_obs = min(day_of_year),
-            last_obs = max(day_of_year),
-            mean_int = round(mean(interval, na.rm = TRUE), 2),
-            max_int = ifelse(nobs ==1, NA, max(interval, na.rm = TRUE)),
-            n_inphase = sum(phenophase_status),
-            n_intvalue = sum(!is.na(intensity_value)),
-            prop_inphase = round(n_inphase / nobs, 2),
-            prop_intvalue = round(n_intvalue / n_inphase, 2),
-            .groups = "keep") %>%
-  data.frame()
+# Check that there's only one intensity category for each species-phenophase?
+spil <- si %>%
+  filter(!is.na(intensity_category_id)) %>%
+  distinct(common_name, phenophase_description, intensity_name,
+           intensity_type, intensity_label)
+count(spil, common_name, phenophase_description) %>%
+  pull(n) %>% 
+  max()
 
-# Download plant details ------------------------------------------------------#
+# Make intensity midpoints = 0 if status = 0 and add intensity category labels
+si <- si %>%
+  mutate(intensity_midpoint = ifelse(phenophase_status == 0, 
+                                     0, intensity_midpoint)) %>%
+  dplyr::select(-c(intensity_name, intensity_type, intensity_label)) %>%
+  left_join(spil, by = c("common_name", "phenophase_description"))
+# Now the only NAs left in the intensity_midpoint column occur when the status 
+# is yes but no intensity value was provided or for the Pollen release 
+# phenophase
+
+# Load plant details ----------------------------------------------------------#
 
 # # Base URL for getting plant details through NPN API
 # url_base <- "https://services.usanpn.org/npn_portal/individuals/getPlantDetails.xml?individual_id[0]=250&individual_id[1]=360"
@@ -130,6 +134,13 @@ plantdetails <- read.csv("npn-data/mcdo-ancillary-individual-plant-data.csv") %>
 # #117055: died from drought on 3/14/2024
 # #117062: died of unknown cases, last seem alive on 11/16/2021
 
+# Load weather data -----------------------------------------------------------#
+
+# See mcdowell-weather-data.R for details about PRISM data download
+
+weather <- read.csv("weather-data/mcdo-20162024.csv") %>%
+  dplyr::select(-c(lat, lon))
+
 # Filter data: plant-phenophase-year combinations -----------------------------#
 
 # Want to:
@@ -137,41 +148,83 @@ plantdetails <- read.csv("npn-data/mcdo-ancillary-individual-plant-data.csv") %>
   # remove plant-php-year combos with < 10 observations
   # remove plant-php-year combos with maximum interval >21 days 
 
-  # Also note that original we had filtered out plant-php-years where no 
-  # observations were in phase or had intensity values. However, for this 
-  # analysis, we want to include these data AS LONG AS the observations fall
-  # within the period that the phenophase is typically observed.
+  # For analyses of annual max counts, we want to include max annual counts of 
+  # zero AS LONG AS observations were made within the period that the phenophase 
+  # is typically observed. So, for each species and phenophase, we aggregated
+  # all dates when plants at McDowell were considered in phase, and then 
+  # elected to:
+  # remove any plant-php-year combos where fewer than 5 observations were made 
+  # between dates associated with the 10th and 90th percentile AND fewer than 2 
+  # observations were made between dates associated with the 25th and 75th 
+  # percentiles.
 
-###### Need to revisit all these filtering steps ###########
+# Identify when species at McDowell are typically in various phenophases
+timings <- si %>%
+  filter(phenophase_status == 1) %>%
+  group_by(common_name, phenophase_description) %>%
+  summarize(nyrs = n_distinct(yr),
+            nplants = n_distinct(individual_id),
+            nplantyrs = n_distinct(paste(yr, individual_id)),
+            mean = round(mean(day_of_year)),
+            q0.10 = quantile(day_of_year, probs = 0.10),
+            q0.25 = quantile(day_of_year, probs = 0.25),
+            q0.50 = quantile(day_of_year, probs = 0.50),
+            q0.75 = quantile(day_of_year, probs = 0.75),
+            q0.90 = quantile(day_of_year, probs = 0.90),
+            .groups = "keep") %>%
+  mutate(across(mean:q0.90, round)) %>%
+  mutate(length_50 = q0.75 - q0.25,
+         length_80 = q0.90 - q0.10) %>%
+  data.frame()
+# timings
 
+# Summarize amount and quality of information for each plant, phenophase, year
+pl_ph_yr <- si %>%
+  left_join(dplyr::select(timings, common_name, phenophase_description, 
+                          q0.10, q0.25, q0.75, q0.90), 
+            by = c("common_name", "phenophase_description")) %>%
+  mutate(in50 = ifelse(day_of_year >= q0.25 & day_of_year <= q0.75, 1, 0)) %>%
+  mutate(in80 = ifelse(day_of_year >= q0.10 & day_of_year <= q0.90, 1, 0)) %>%
+  group_by(common_name, individual_id, phenophase_description, yr) %>%
+  summarize(nobs = n(),
+            first_obs = min(day_of_year),
+            last_obs = max(day_of_year),
+            nobs50 = sum(in50),
+            nobs80 = sum(in80),
+            mean_int = round(mean(interval, na.rm = TRUE), 2),
+            max_int = ifelse(nobs ==1, NA, max(interval, na.rm = TRUE)),
+            n_inphase = sum(phenophase_status),
+            n_intvalue = sum(!is.na(intensity_value)),
+            prop_inphase = round(n_inphase / nobs, 2),
+            prop_intvalue = round(n_intvalue / n_inphase, 2),
+            max_intensity = ifelse(sum(is.na(intensity_midpoint)) == n(),
+                                   NA, max(intensity_midpoint, na.rm = TRUE)),
+            .groups = "keep") %>%
+  data.frame()
+
+# Identify which plant-php-yr combinations could be removed 
 pl_ph_yr <- pl_ph_yr %>%
   mutate(remove = case_when(
     phenophase_description == "Pollen release (flowers)" ~ 1,
     nobs < 10 ~ 1,
     max_int > 21 ~ 1,
+    is.na(max_intensity) ~ 1,
+    max_intensity == 0 & nobs80 < 5 ~ 1,
+    max_intensity == 0 & nobs50 < 2 ~ 1,
     .default = 0
   ))
+# check:
+# count(filter(pl_ph_yr, remove == 1 & 
+#                phenophase_description != "Pollen release (flowers)"), 
+#       nobs < 10, max_int > 21, is.na(max_intensity),
+#       (max_intensity == 0 & !is.na(max_intensity)), nobs80 < 5, nobs50 < 2)
+
 si <- si %>%
-  left_join(dplyr::select(pl_ph_yr, individual_id, phenophase_description, yr, remove),
+  left_join(dplyr::select(pl_ph_yr, individual_id, phenophase_description, yr, 
+                          remove),
             by = c("individual_id", "phenophase_description", "yr")) %>%
   filter(remove == 0) %>%
   dplyr::select(-remove)
-
-# Check that there's only one intensity category for each species-phenophase?
-spil <- si %>%
-  filter(!is.na(intensity_category_id)) %>%
-  distinct(common_name, phenophase_description, intensity_name,
-           intensity_type, intensity_label)
-spl <- si %>%
-  distinct(common_name, phenophase_description)
-# setdiff(spl, spil[, 1:2])
-
-# Make intensity midpoints = 0 if status = 0 and add intensity category labels
-si <- si %>%
-  mutate(intensity_midpoint = ifelse(phenophase_status == 0, 
-                                     0, intensity_midpoint)) %>%
-  dplyr::select(-c(intensity_name, intensity_type, intensity_label)) %>%
-  left_join(spil, by = c("common_name", "phenophase_description"))
 
 # Summarize data by species ---------------------------------------------------#
 
@@ -439,24 +492,24 @@ count(flowers, common_name, intensity_midpoint)
                  intensity_short == "Flowers"),
         intensity_midpoint, intensity_value)
   count(flowers_py_cholla, max_count)
-  # 0:                        5/74
-  # Less than 3 (1):          5/74
-  # 3 to 10 (5):              2/74
-  # 11 to 100 (50):          27/74
-  # 101 to 1000 (500):       31/74
-  # More than 1,000 (1001):   4/74
+  # 0:                        1/70
+  # Less than 3 (1):          5/70
+  # 3 to 10 (5):              2/70
+  # 11 to 100 (50):          27/70
+  # 101 to 1000 (500):       31/70
+  # More than 1,000 (1001):   4/70
   
-  # Not sure about grouping, but for now will try:
-  # 0 (none), 1-5 (few), 50 (some), 500-1001 (many)
+  # Since there's only one zero, will have to group with few
+  # 0-5 (few), 50 (some), 500-1001 (many)
   flowers_py_cholla <- flowers_py_cholla %>%
     mutate(abund = case_when(
-      max_count == 0 ~ "none",
+      max_count == 0 ~ "few",
       max_count == 1 ~ "few",
       max_count == 5 ~ "few",
       max_count == 50 ~ "some",
       max_count >= 500 ~ "many",
     )) %>%
-    mutate(abund = factor(abund, levels = c("none", "few", "some", "many")))
+    mutate(abund = factor(abund, levels = c("few", "some", "many")))
   
   # Visualize for each year
   flowers_pya_cholla <- flowers_py_cholla %>%
@@ -468,7 +521,7 @@ count(flowers, common_name, intensity_midpoint)
   ggplot(flowers_pya_cholla, aes(y = abund, x = fyr)) +
     geom_point(aes(size = n)) +
     facet_grid(site ~ .) +
-    scale_y_discrete(labels = c("0", "1-5", "50", "500+")) +
+    scale_y_discrete(labels = c("0-5", "50", "500+")) +
     scale_size_continuous(breaks = 1:3, range = c(2, 4)) +
     labs(x = "", y = "Abundance category", size = "No. plants", 
          title = "buck-horn cholla, flowers")
@@ -503,20 +556,18 @@ count(flowers, common_name, intensity_midpoint)
   
   m2 <- polr(abund ~ fyr, Hess = TRUE, data = flowers_py_cholla)
   summary(m2)
-  
   m3 <- polr(abund ~ site + fyr, Hess = TRUE, data = flowers_py_cholla)
   summary(m3)
-  
   m4 <- polr(abund ~ site * fyr, Hess = TRUE, data = flowers_py_cholla)
   summary(m4)
-  # Warning about rank-deficient design (didn't encounter this when 
-  # 0 max counts were excluded). Could also group 0 with 1-5...
+  # Warning about rank-deficient design
   
-  AIC(m1, m2, m3, m4)
-  # Year model is slightly better than year + site
+  AIC(m1, m2, m3)
+  # Additive model slightly better than year alone
   
   # Strong evidence that max flower counts differed among years, mostly because
-  # counts in 2021 were much lower at all sites. Not much different among sites
+  # counts in 2021 were much lower at all sites (though 2018 was also low). 
+  # Counts at Gateway slightly lower
   
   # These models could be much more useful if we replaced year with some 
   # measure(s) of weather at each site and year. Precipitation seems like an 
@@ -536,24 +587,24 @@ count(flowers, common_name, intensity_midpoint)
   count(filter(gamdf, common_name == "saguaro" & intensity_short == "Flowers"),
         intensity_midpoint, intensity_value)
   count(flowers_py_sag, max_count)
-  # 0:                        3/65
-  # Less than 3 (1):          1/65
-  # 3 to 10 (5):              7/65
-  # 11 to 100 (50):          20/65
-  # 101 to 1000 (500):       27/65
-  # More than 1,000 (1001):   7/65
+  # 0:                        1/63
+  # Less than 3 (1):          1/63
+  # 3 to 10 (5):              7/63
+  # 11 to 100 (50):          20/63
+  # 101 to 1000 (500):       27/63
+  # More than 1,000 (1001):   7/63
   
   # Will try same grouping as buck-horn cholla:
-  # 0 (none), 1-5 (few), 50 (some), 500-1001 (many)
+  # 0-5 (few), 50 (some), 500-1001 (many)
   flowers_py_sag <- flowers_py_sag %>%
     mutate(abund = case_when(
-      max_count == 0 ~ "none",
+      max_count == 0 ~ "few",
       max_count == 1 ~ "few",
       max_count == 5 ~ "few",
       max_count == 50 ~ "some",
       max_count >= 500 ~ "many",
     )) %>%
-    mutate(abund = factor(abund, levels = c("none", "few", "some", "many")))
+    mutate(abund = factor(abund, levels = c("few", "some", "many")))
   
   # Visualize for each year
   flowers_pya_sag <- flowers_py_sag %>%
@@ -565,16 +616,15 @@ count(flowers, common_name, intensity_midpoint)
   ggplot(flowers_pya_sag, aes(y = abund, x = fyr)) +
     geom_point(aes(size = n)) +
     facet_grid(site ~ .) +
-    scale_y_discrete(labels = c("0", "1-5", "50", "500+")) +
+    scale_y_discrete(labels = c("0-5", "50", "500+")) +
     scale_size_continuous(breaks = 1:3, range = c(2, 4)) +
     labs(x = "", y = "Abundance category", size = "No. plants", 
          title = "saguaro, flowers")
   
-  # Test run with MASS::polr
   flowers_py_sag$site <- factor(flowers_py_sag$site_name)
   flowers_py_sag$fyr <- factor(flowers_py_sag$yr)
   
-  # By default, logistic regression (could change to probit)
+  # Models
   m1 <- polr(abund ~ site, Hess = TRUE, data = flowers_py_sag)
     summary(m1)
     # p-values (really only valid for larger sample sizes)
@@ -584,7 +634,6 @@ count(flowers, common_name, intensity_midpoint)
 
   m2 <- polr(abund ~ fyr, Hess = TRUE, data = flowers_py_sag)
   summary(m2)
-  
   m3 <- polr(abund ~ site + fyr, Hess = TRUE, data = flowers_py_sag)
   summary(m3)
   # Warning: glm.fit: fitted probabilities numerically 0 or 1 occurred 
@@ -593,8 +642,8 @@ count(flowers, common_name, intensity_midpoint)
   # Warning about rank-deficient design (didn't encounter this when 
   # 0 max counts were excluded). Could also group 0 with 1-5...
   
-  AIC(m1, m2, m3, m4)
-  # Site model much better than year (ignoring other 2)
+  AIC(m1, m2)
+  # Site model much better than year (ignoring other 2 models)
   
   # Strong evidence that max flower counts differed among sites, with most 
   # saguaros at Brown's Ranch always having 500+ flowers (would be good to 
@@ -616,7 +665,7 @@ count(flowers, common_name, intensity_midpoint)
   count(filter(gamdf, common_name == "jojoba" & intensity_short == "Flowers"),
         intensity_midpoint, intensity_value)
   count(flowers_py_jojo, max_count)
-  # 0:                        2/82
+  # 0:                        0/82
   # Less than 3 (1):          0/82
   # 3 to 10 (5):              1/82
   # 11 to 100 (50):           7/82
@@ -649,11 +698,10 @@ count(flowers, common_name, intensity_midpoint)
     labs(x = "", y = "Abundance category", size = "No. plants", 
          title = "jojoba, flowers")
   
-  # Test run with MASS::polr
   flowers_py_jojo$site <- factor(flowers_py_jojo$site_name)
   flowers_py_jojo$fyr <- factor(flowers_py_jojo$yr)
   
-  # By default, logistic regression (could change to probit)
+  # Models
   m1 <- polr(abund ~ site, Hess = TRUE, data = flowers_py_jojo)
     summary(m1)
     # p-values (really only valid for larger sample sizes)
@@ -663,25 +711,20 @@ count(flowers, common_name, intensity_midpoint)
 
   m2 <- polr(abund ~ fyr, Hess = TRUE, data = flowers_py_jojo)
   summary(m2)
-  
   m3 <- polr(abund ~ site + fyr, Hess = TRUE, data = flowers_py_jojo)
   summary(m3)
-  
   m4 <- polr(abund ~ site * fyr, Hess = TRUE, data = flowers_py_jojo)
   summary(m4)
   # Warning about rank-deficient design
   
-  AIC(m1, m2, m3, m4)
-  # Additive model is the best...
+  AIC(m1, m2, m3)
+  # Additive model is best...
   
   # Strong evidence that max flower counts differed among sites, with lower 
   # number of flowers at Lost Dog. Does look like some annual variation, but
   # there are some estimation difficulties because all plants monitored in 2017
   # had 5000+ max counts.
-  
-  
-# PICK UP HERE ######################3  
-  
+
 # -----------------------------------------------------------------------------#
 # Exploring variation in max counts for fruits phenophase ---------------------#
   
@@ -725,19 +768,17 @@ count(filter(si, intensity_label == "No. fruits"),
                  intensity_short == "Fruits"),
         intensity_midpoint, intensity_value)
   count(fruit_py_cholla, max_count)
-  # 0:                        0/71
-  # Less than 3 (1):          4/71
-  # 3 to 10 (5):              6/71
-  # 11 to 100 (50):          27/71
-  # 101 to 1000 (500):       33/71
-  # More than 1,000 (1001):   1/71
+  # 0:                        2/73
+  # Less than 3 (1):          4/73
+  # 3 to 10 (5):              6/73
+  # 11 to 100 (50):          27/73
+  # 101 to 1000 (500):       33/73
+  # More than 1,000 (1001):   1/73
   
-  # Not sure about grouping, but for now will try:
-  # 1-5 (few), 50 (some), 500-1001 (many) [Don't need "none" group]
+  # 0-5 (few), 50 (some), 500-1001 (many)
   fruit_py_cholla <- fruit_py_cholla %>%
     mutate(abund = case_when(
-      max_count == 1 ~ "few",
-      max_count == 5 ~ "few",
+      max_count %in% 0:5 ~ "few",
       max_count == 50 ~ "some",
       max_count >= 500 ~ "many",
     )) %>%
@@ -753,16 +794,15 @@ count(filter(si, intensity_label == "No. fruits"),
   ggplot(fruit_pya_cholla, aes(y = abund, x = fyr)) +
     geom_point(aes(size = n)) +
     facet_grid(site ~ .) +
-    scale_y_discrete(labels = c("1-5", "50", "500+")) +
-    scale_size_continuous(breaks = 1:3) +
+    scale_y_discrete(labels = c("0-5", "50", "500+")) +
+    scale_size_continuous(breaks = 1:3, range = c(2, 4)) +
     labs(x = "", y = "Abundance category", size = "No. plants", 
          title = "buck-horn cholla, fruit")
   
-  # Test run with MASS::polr
   fruit_py_cholla$site <- factor(fruit_py_cholla$site_name)
   fruit_py_cholla$fyr <- factor(fruit_py_cholla$yr)
   
-  # By default, logistic regression (could change to probit)
+  # Models
   m1 <- polr(abund ~ site, Hess = TRUE, data = fruit_py_cholla)
     summary(m1)
     # p-values (really only valid for larger sample sizes)
@@ -772,19 +812,18 @@ count(filter(si, intensity_label == "No. fruits"),
 
   m2 <- polr(abund ~ fyr, Hess = TRUE, data = fruit_py_cholla)
   summary(m2)
-  
   m3 <- polr(abund ~ site + fyr, Hess = TRUE, data = fruit_py_cholla)
   summary(m3)
-  
   m4 <- polr(abund ~ site * fyr, Hess = TRUE, data = fruit_py_cholla)
   summary(m4)
+  # Warning about rank-deficient design
   
-  AIC(m1, m2, m3, m4)
-  # Additive model is the best...
+  AIC(m1, m2, m3)
+  # Additive model is best...
   
-  # Strong evidence that max flower counts differed among years, similarly
-  # among sites. All max counts in 2019 were 500+ (which causes some
-  # estimation problems). Counts in 2021 all low.
+  # Strong evidence that max flower counts differed among years (though all max 
+  # counts in 2019 were 500+ (which causes some estimation problems). 
+  # Counts in 2021 all low. Counts don't vary that much among sites
 
   # saguaro -------------------------------------------------------------------#
   # Aggregate data for each plant-year: buck-horn cholla
@@ -801,18 +840,17 @@ count(filter(si, intensity_label == "No. fruits"),
                  intensity_short == "Fruits"),
         intensity_midpoint, intensity_value)
   count(fruit_py_sag, max_count)
-  # 0:                        0/57
-  # Less than 3 (1):          2/57
-  # 3 to 10 (5):             10/57
-  # 11 to 100 (50):          17/57
-  # 101 to 1000 (500):       27/57
-  # More than 1,000 (1001):   1/57
+  # 0:                        6/63
+  # Less than 3 (1):          2/63
+  # 3 to 10 (5):             10/63
+  # 11 to 100 (50):          17/63
+  # 101 to 1000 (500):       27/63
+  # More than 1,000 (1001):   1/63
   
-  # 1-5 (few), 50 (some), 500-1001 (many) [Don't need "none" group]
+  # 0-5 (few), 50 (some), 500-1001 (many)
   fruit_py_sag <- fruit_py_sag %>%
     mutate(abund = case_when(
-      max_count == 1 ~ "few",
-      max_count == 5 ~ "few",
+      max_count %in% 0:5 ~ "few",
       max_count == 50 ~ "some",
       max_count >= 500 ~ "many",
     )) %>%
@@ -828,34 +866,32 @@ count(filter(si, intensity_label == "No. fruits"),
   ggplot(fruit_pya_sag, aes(y = abund, x = fyr)) +
     geom_point(aes(size = n)) +
     facet_grid(site ~ .) +
-    scale_y_discrete(labels = c("1-5", "50", "500+")) +
-    scale_size_continuous(breaks = 1:3) +
+    scale_y_discrete(labels = c("0-5", "50", "500+")) +
+    scale_size_continuous(breaks = 1:3, range = c(2, 4)) +
     labs(x = "", y = "Abundance category", size = "No. plants", 
          title = "saguaro, fruit")
   
-  # Test run with MASS::polr
   fruit_py_sag$site <- factor(fruit_py_sag$site_name)
   fruit_py_sag$fyr <- factor(fruit_py_sag$yr)
   
-  # By default, logistic regression (could change to probit)
+  # Models
   m1 <- polr(abund ~ site, Hess = TRUE, data = fruit_py_sag)
-  summary(m1)
-  # p-values (really only valid for larger sample sizes)
-  ctable <- coef(summary(m1))
-  p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
-  (ctable <- cbind(ctable, "p value" = round(p, 3)))
+    summary(m1)
+    # p-values (really only valid for larger sample sizes)
+    ctable <- coef(summary(m1))
+    p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+    (ctable <- cbind(ctable, "p value" = round(p, 3)))
   
   m2 <- polr(abund ~ fyr, Hess = TRUE, data = fruit_py_sag)
   summary(m2)
-  
   m3 <- polr(abund ~ site + fyr, Hess = TRUE, data = fruit_py_sag)
   summary(m3)
-  
   m4 <- polr(abund ~ site * fyr, Hess = TRUE, data = fruit_py_sag)
   summary(m4)
+  # Warning about rank-deficient design
   
-  AIC(m1, m2, m3, m4)
-  # Additive model is the best...
+  AIC(m1, m2, m3)
+  # Additive model is best...
   
   # Similar to flower counts, there are big site differences (counts higher at 
   # Brown's Ranch). Some annual differences, but estimation issues for 2018
@@ -876,23 +912,24 @@ count(filter(si, intensity_label == "No. fruits"),
                  intensity_short == "Fruits"),
         intensity_midpoint, intensity_value)
   count(fruit_py_jojo, max_count)
-  # 0:                        0/43
-  # Less than 3 (1):          3/43
-  # 3 to 10 (5):              2/43
-  # 11 to 100 (50):          14/43
-  # 101 to 1000 (500):       13/43
-  # 1001 to 10000 (5000):    11/43
-  # More than 10000 (10001):  0/43
+  # 0:                       20/63
+  # Less than 3 (1):          3/63
+  # 3 to 10 (5):              2/63
+  # 11 to 100 (50):          14/63
+  # 101 to 1000 (500):       13/63
+  # 1001 to 10000 (5000):    11/63
+  # More than 10000 (10001):  0/63
   
-  # Use flowers grouping
-  # 1-50 (few), 500 (some), 5000-10001 (many) [Don't need "none" group]
+  # Try something different here since there are a lot of 0s
+  # 0 (none), 1-50 (few), 500 (some), 5000-10001 (many)
   fruit_py_jojo <- fruit_py_jojo %>%
     mutate(abund = case_when(
+      max_count == 0 ~ "none",
       max_count %in% 1:50 ~ "few",
       max_count == 500 ~ "some",
       max_count >= 5000 ~ "many",
     )) %>%
-    mutate(abund = factor(abund, levels = c("few", "some", "many")))
+    mutate(abund = factor(abund, levels = c("none", "few", "some", "many")))
 
   # Visualize for each year
   fruit_pya_jojo <- fruit_py_jojo %>%
@@ -904,39 +941,36 @@ count(filter(si, intensity_label == "No. fruits"),
   ggplot(fruit_pya_jojo, aes(y = abund, x = fyr)) +
     geom_point(aes(size = n)) +
     facet_grid(site ~ .) +
-    scale_y_discrete(labels = c("1-5", "50", "500+")) +
-    scale_size_continuous(breaks = 1:3) +
+    scale_y_discrete(labels = c("0", "1-50", "500", "5000+")) +
+    scale_size_continuous(breaks = 1:3, range = c(2, 4)) +
     labs(x = "", y = "Abundance category", size = "No. plants", 
          title = "jojoba, fruit")
   
-  # Test run with MASS::polr
   fruit_py_jojo$site <- factor(fruit_py_jojo$site_name)
   fruit_py_jojo$fyr <- factor(fruit_py_jojo$yr)
   
-  # By default, logistic regression (could change to probit)
+  # Models
   m1 <- polr(abund ~ site, Hess = TRUE, data = fruit_py_jojo)
-  summary(m1)
-  # p-values (really only valid for larger sample sizes)
-  ctable <- coef(summary(m1))
-  p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
-  (ctable <- cbind(ctable, "p value" = round(p, 3)))
+    summary(m1)
+    # p-values (really only valid for larger sample sizes)
+    ctable <- coef(summary(m1))
+    p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+    (ctable <- cbind(ctable, "p value" = round(p, 3)))
   
   m2 <- polr(abund ~ fyr, Hess = TRUE, data = fruit_py_jojo)
   summary(m2)
-  
   m3 <- polr(abund ~ site + fyr, Hess = TRUE, data = fruit_py_jojo)
   summary(m3)
-  
   m4 <- polr(abund ~ site * fyr, Hess = TRUE, data = fruit_py_jojo)
   summary(m4)
-  # Warning about rank-deficient design (like flowers)
+  # Warning about rank-deficient design
   
   AIC(m1, m2, m3)
-  # Site model is the best...
+  # Year model is best
   
-  # Less data for jojoba fruit, especially in early years. I think this is why
-  # the simplest (site) model has the lowest AIC. In last couple years, counts
-  # at Brown's ranch were 500+ but counts at other sites were much lower.
+  # Counts in 2018 and 2021 were a little lower, counts in 2022 are a bit 
+  # higher. In last few years, counts at Brown's ranch were 5000+ but counts at 
+  # other sites were much lower.
   
 # -----------------------------------------------------------------------------#
 # Exploring variation in max counts for fruit drop phenophase -----------------#
@@ -980,25 +1014,26 @@ count(filter(si, intensity_label == "No. fruit/seed drop"),
         intensity_midpoint, intensity_value)
 
   count(drop_py, max_count)
-  # 0:                       0/116
-  # Less than 3 (1):        34/116
-  # 3 to 10 (5):            31/116
-  # 11 to 100 (50):         42/116
-  # 101 to 1000 (500):       6/116
-  # More than 1000 (1001):   2/116
-  # More than 10000 (10001): 1/116
+  # 0:                      63/179
+  # Less than 3 (1):        34/179
+  # 3 to 10 (5):            31/179
+  # 11 to 100 (50):         42/179
+  # 101 to 1000 (500):       6/179
+  # More than 1000 (1001):   2/179
+  # More than 10000 (10001): 1/179
   
   # Trying something, but not sure this is worth doing. I don't think there's 
   # any justification for splitting 1 and 5, and I'm not sure there are enough
   # observations to have the 500-10001 category....
-  # 1-5 (few), 50 (some), 500-10001 (many) [Don't need "none" group]
+  # 0 (none); 1-5 (few), 50 (some), 500-10001 (many)
   drop_py <- drop_py %>%
     mutate(abund = case_when(
+      max_count == 0 ~ "none",
       max_count %in% 1:5 ~ "few",
       max_count == 50 ~ "some",
       max_count > 50 ~ "many",
     )) %>%
-    mutate(abund = factor(abund, levels = c("few", "some", "many")))
+    mutate(abund = factor(abund, levels = c("none", "few", "some", "many")))
   
   # Visualize for each year
   drop_pya <- drop_py %>%
@@ -1011,8 +1046,8 @@ count(filter(si, intensity_label == "No. fruit/seed drop"),
   ggplot(drop_pya, aes(y = abund, x = fyr)) +
     geom_point(aes(size = n)) +
     facet_grid(site ~ spp) +
-    scale_y_discrete(labels = c("1-5", "50", "500+")) +
-    scale_size_continuous(breaks = 1:3) +
+    scale_y_discrete(labels = c("0", "1-5", "50", "500+")) +
+    scale_size_continuous(breaks = 1:3, range = c(2, 4)) +
     labs(x = "", y = "Abundance category", size = "No. plants", 
          title = "3 species, fruit drop")
   
@@ -1020,17 +1055,18 @@ count(filter(si, intensity_label == "No. fruit/seed drop"),
   drop_py$fyr <- factor(drop_py$yr)
   drop_py$spp <- factor(drop_py$common_name)
   
+  # Models
+  m_null <- polr(abund ~ 1, Hess = TRUE, data = drop_py)
   m_site <- polr(abund ~ site, Hess = TRUE, data = drop_py)
   summary(m_site)
-
   m_spp <- polr(abund ~ spp, Hess = TRUE, data = drop_py)
   summary(m_spp)
-  
   m_fyr <- polr(abund ~ fyr, Hess = TRUE, data = drop_py)
   summary(m_fyr)
-  
   m_sitesppfyr <- polr(abund ~ site + spp + fyr, Hess = TRUE, data = drop_py)
   summary(m_sitesppfyr)
-  
-  AIC(m_site, m_fyr, m_spp, m_sitesppfyr)
+
+  AIC(m_null, m_site, m_fyr, m_spp, m_sitesppfyr)
+  # Full additive model very slightly better than year model, but even that is
+  # <5 points different than null model so no strong patterns.
   

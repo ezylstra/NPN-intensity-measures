@@ -6,6 +6,7 @@ library(stringr)
 library(lubridate)
 library(ggplot2)
 library(MASS)
+library(ordinal)
 
 # Plant phenophase classes
 leaf_classes <- 1:5
@@ -566,12 +567,53 @@ count(flowers, common_name, intensity_midpoint)
   # Additive model slightly better than year alone
   
   # Strong evidence that max flower counts differed among years, mostly because
-  # counts in 2021 were much lower at all sites (though 2018 was also low). 
+  # counts in 2021 and 2018 were much lower at all sites.
   # Counts at Gateway slightly lower
   
   # These models could be much more useful if we replaced year with some 
   # measure(s) of weather at each site and year. Precipitation seems like an 
   # obvious target, particularly given that the 2020 drought was extreme...
+  
+  ####### Running similar models, but including random intercepts for each plant
+  ####### to account for repeated observations
+  m2o <- clmm(abund ~ fyr + (1|id), Hess = TRUE, nAGQ = 10,
+              data = flowers_py_cholla)
+  summary(m2o)
+  # cond.H is the condition number of the Hessian. Va5lues > 10e4 or 10e6 indicate
+  # that the model is ill defined (model coudl be simplied or some parameters
+  # are not identifiable)
+  
+  m3o <- clmm(abund ~ fyr + site + (1|id), Hess = TRUE, nAGQ = 10,
+              data = flowers_py_cholla)
+  summary(m3o)
+  
+  anova(m2o, m3o) 
+  # Indicates that we don't need site in models that include random effects
+  
+  # Check if RE is needed
+  m2o_noRE <- clm(abund ~ fyr, Hess = TRUE, nAGQ = 10, data = flowers_py_cholla)
+  summary(m2o_noRE)
+  
+  anova(m2o_noRE, m2o) 
+  # Indicates RE is helpful (though note that it may be moore appropriate to
+  # cut the reported p-value in half because it's a test of a variance term that
+  # can't be negative)
+  
+  # Plot plant-level effects (from tutorial pdf on clmm2)
+  ci <- m2o$ranef + qnorm(0.975) * sqrt(m2o$condVar) %o% c(-1, 1) 
+  res <- data.frame(est = m2o$ranef,
+                    lwr = ci[, 1],
+                    upr = ci[, 2],
+                    id = sort(unique(flowers_py_cholla$id))) %>%
+    left_join(distinct(flowers_py_cholla, id, site), by = "id") %>%
+    mutate(id = factor(id)) %>%
+    arrange(site, id)
+  ggplot(res, aes(x = id, y = est)) +
+    geom_point() +
+    geom_errorbar(aes(ymin = lwr, ymax = upr), width = 0) +
+    facet_grid(.~site, scale = "free_x")
+  
+  ##############################################################################
 
   # saguaro -------------------------------------------------------------------#
   # Aggregate data for each plant-year: saguaro

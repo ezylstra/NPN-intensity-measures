@@ -5,7 +5,7 @@ library(dplyr)
 library(stringr)
 library(lubridate)
 library(ggplot2)
-library(MASS)
+# library(MASS)
 library(ordinal)
 
 # Plant phenophase classes
@@ -114,12 +114,6 @@ si <- si %>%
 
 # Load plant details ----------------------------------------------------------#
 
-# # Base URL for getting plant details through NPN API
-# url_base <- "https://services.usanpn.org/npn_portal/individuals/getPlantDetails.xml?individual_id[0]=250&individual_id[1]=360"
-# 
-# # get vector of plant IDs
-# plantids <- unique(si$individual_id)
-
 # Was going to download plant details, but I had this file already from POP. 
 # There is no information about size, age, or number of arms (though if we're
 # going to use this as a case study in a paper, I'd definitely want to get this
@@ -203,7 +197,7 @@ pl_ph_yr <- si %>%
             .groups = "keep") %>%
   data.frame()
 
-# Identify which plant-php-yr combinations could be removed 
+# Identify which plant-php-yr combinations to filter out
 pl_ph_yr <- pl_ph_yr %>%
   mutate(remove = case_when(
     phenophase_description == "Pollen release (flowers)" ~ 1,
@@ -215,8 +209,8 @@ pl_ph_yr <- pl_ph_yr %>%
     .default = 0
   ))
 # check:
-# count(filter(pl_ph_yr, remove == 1 & 
-#                phenophase_description != "Pollen release (flowers)"), 
+# count(filter(pl_ph_yr, remove == 1 &
+#                phenophase_description != "Pollen release (flowers)"),
 #       nobs < 10, max_int > 21, is.na(max_intensity),
 #       (max_intensity == 0 & !is.na(max_intensity)), nobs80 < 5, nobs50 < 2)
 
@@ -448,6 +442,12 @@ combos <- gamdf %>%
 # write.table(dplyr::select(combos, -class_id), "clipboard",
 #             sep = "\t", row.names = FALSE)
 
+combos_n <- filter(combos, intensity_type == "number")
+# combos_n
+# Will focus on 3 intensity categories: flowers, fruit, fruit/seed drop and
+# ignore 1 category (yound leaves), since there are only a couple species with 
+# relatively little variation in max counts
+
 # -----------------------------------------------------------------------------#
 # Exploring variation in max counts for flowers phenophase --------------------#
 
@@ -500,13 +500,11 @@ count(flowers, common_name, intensity_midpoint)
   # 101 to 1000 (500):       31/70
   # More than 1,000 (1001):   4/70
   
-  # Since there's only one zero, will have to group with few
+  # Since there's only one zero, will have to group with low counts
   # 0-5 (few), 50 (some), 500-1001 (many)
   flowers_py_cholla <- flowers_py_cholla %>%
     mutate(abund = case_when(
-      max_count == 0 ~ "few",
-      max_count == 1 ~ "few",
-      max_count == 5 ~ "few",
+      max_count %in% 0:5 ~ "few",
       max_count == 50 ~ "some",
       max_count >= 500 ~ "many",
     )) %>%
@@ -527,94 +525,178 @@ count(flowers, common_name, intensity_midpoint)
     labs(x = "", y = "Abundance category", size = "No. plants", 
          title = "buck-horn cholla, flowers")
   
-  # Test run with MASS::polr
+  # Converting variables to factors
   flowers_py_cholla$site <- factor(flowers_py_cholla$site_name)
   flowers_py_cholla$fyr <- factor(flowers_py_cholla$yr)
+  flowers_py_cholla$id <- factor(flowers_py_cholla$id)
   
-  # By default, logistic regression (could change to probit)
-  m1 <- polr(abund ~ site, Hess = TRUE, data = flowers_py_cholla)
-    summary(m1)
-    # p-values (really only valid for larger sample sizes)
-    ctable <- coef(summary(m1))
-    p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
-    (ctable <- cbind(ctable, "p value" = round(p, 3)))
-    # confidence intervals (profiling likelihood function)
-    ci <- confint(m1)
-    # confidence intervals (assuming normality)
-    ci <- confint.default(m1)
-    # Odds ratios
-    exp(cbind(OR = coef(m1), ci))
+  # Running ordinal models with ordinal package so we can include random effects
+  # Will leave a bit of code at end of the script that I had originally used to
+  # run ordinal models with MASS::polr()
   
-  # Predicted probabilities (could include new values for continuous covs in model)
-  newdat <- data.frame(
-    site = sort(unique(flowers_py_cholla$site))
-  )
-  newdat <- cbind(newdat, round(predict(m1, newdat, type = "probs"), 3))
-  newdat  
+  # Year model with plant RE
+  m_yrRE <- clmm(abund ~ fyr + (1|id), Hess = TRUE, nAGQ = 10,
+                 data = flowers_py_cholla)
+    # cond.H is the condition number of the Hessian. Values > 10e4 or 10e6 
+    # indicate that the model is ill defined (model coudl be simplied or some 
+    # parameters are not identifiable)
   
-  # Mean rank/category for each species
-  summary(lsmeans::lsmeans(m1, pairwise ~ site, mode = "mean"), type="response")$lsmeans
-  
-  m2 <- polr(abund ~ fyr, Hess = TRUE, data = flowers_py_cholla)
-  summary(m2)
-  m3 <- polr(abund ~ site + fyr, Hess = TRUE, data = flowers_py_cholla)
-  summary(m3)
-  m4 <- polr(abund ~ site * fyr, Hess = TRUE, data = flowers_py_cholla)
-  summary(m4)
-  # Warning about rank-deficient design
-  
-  AIC(m1, m2, m3)
-  # Additive model slightly better than year alone
-  
-  # Strong evidence that max flower counts differed among years, mostly because
-  # counts in 2021 and 2018 were much lower at all sites.
-  # Counts at Gateway slightly lower
-  
-  # These models could be much more useful if we replaced year with some 
-  # measure(s) of weather at each site and year. Precipitation seems like an 
-  # obvious target, particularly given that the 2020 drought was extreme...
-  
-  ####### Running similar models, but including random intercepts for each plant
-  ####### to account for repeated observations
-  m2o <- clmm(abund ~ fyr + (1|id), Hess = TRUE, nAGQ = 10,
-              data = flowers_py_cholla)
-  summary(m2o)
-  # cond.H is the condition number of the Hessian. Va5lues > 10e4 or 10e6 indicate
-  # that the model is ill defined (model coudl be simplied or some parameters
-  # are not identifiable)
-  
-  m3o <- clmm(abund ~ fyr + site + (1|id), Hess = TRUE, nAGQ = 10,
-              data = flowers_py_cholla)
-  summary(m3o)
-  
-  anova(m2o, m3o) 
-  # Indicates that we don't need site in models that include random effects
-  
-  # Check if RE is needed
-  m2o_noRE <- clm(abund ~ fyr, Hess = TRUE, nAGQ = 10, data = flowers_py_cholla)
-  summary(m2o_noRE)
-  
-  anova(m2o_noRE, m2o) 
-  # Indicates RE is helpful (though note that it may be moore appropriate to
+  # Year + site with plant RE
+  m_yrsiteRE <- clmm(abund ~ fyr + site + (1|id), Hess = TRUE, nAGQ = 10,
+                     data = flowers_py_cholla)
+
+  # Year without plant RE
+  m_yr <- clm(abund ~ fyr, Hess = TRUE, nAGQ = 10, data = flowers_py_cholla)
+
+  # Compare nested models via LRTs
+  anova(m_yrsiteRE, m_yrRE)
+  # Don't need site
+  anova(m_yrRE, m_yr)
+  # Indicates RE is helpful (though note that it may be more appropriate to
   # cut the reported p-value in half because it's a test of a variance term that
   # can't be negative)
   
-  # Plot plant-level effects (from tutorial pdf on clmm2)
-  ci <- m2o$ranef + qnorm(0.975) * sqrt(m2o$condVar) %o% c(-1, 1) 
-  res <- data.frame(est = m2o$ranef,
+  # Compare all models via AIC
+  AIC(m_yrsiteRE, m_yrRE, m_yr)
+  # All evidence suggests that year is important and site isn't once we've
+  # accounted for plant REs. 
+  
+  # Best model (year with plant REs)
+  summary(m_yrRE)
+
+  # Plot plant-level effects
+  # see: https://tdunn.ca/posts/2020-03-15-ordinal-regression-in-r-part-1/
+  ci <- m_yrRE$ranef + qnorm(0.975) * sqrt(m_yrRE$condVar) %o% c(-1, 1) 
+  res <- data.frame(est = m_yrRE$ranef,
                     lwr = ci[, 1],
                     upr = ci[, 2],
                     id = sort(unique(flowers_py_cholla$id))) %>%
     left_join(distinct(flowers_py_cholla, id, site), by = "id") %>%
-    mutate(id = factor(id)) %>%
-    arrange(site, id)
-  ggplot(res, aes(x = id, y = est)) +
+    arrange(est, site) %>%
+    mutate(site_short = str_split_fixed(as.character(site), ",", 2)[,1])
+  idlevels <- as.character(res$id)
+  res <- res %>%
+    mutate(id2 = factor(id, levels = idlevels))
+  ggplot(res, aes(x = id2, y = est)) +
     geom_point() +
     geom_errorbar(aes(ymin = lwr, ymax = upr), width = 0) +
-    facet_grid(.~site, scale = "free_x")
-  
-  ##############################################################################
+    facet_grid(.~site, scale = "free_x", space = "free_x") +
+    labs(y = "Plant effect", x = "Plant ID")
+  ggplot(res, aes(x = id2, y = est, group = site_short)) +
+    geom_point(aes(color = site_short)) +
+    geom_errorbar(aes(ymin = lwr, ymax = upr, color = site_short), width = 0) +
+    labs(y = "Plant effect", x = "", color = "Site") +
+    theme_bw() +
+    theme(legend.position = "bottom")
+ 
+  # Predicted probability of max counts in each abundance category, by year
+  # First, need to re-run model using clmm2
+  m_yrRE2 <- clmm2(abund ~ fyr, random = id, Hess = TRUE, nAGQ = 10,
+                   data = flowers_py_cholla)
+  nd <- expand.grid(
+    fyr = sort(unique(flowers_py_cholla$fyr)),
+    abund = sort(unique(flowers_py_cholla$abund)),
+    KEEP.OUT.ATTRS = FALSE
+  )
+  nd %>%
+    bind_cols(pred = predict(m_yrRE2, newdata = nd)) %>%
+    ggplot(aes(x = fyr, y = pred, fill = abund)) +
+    geom_col(position = position_stack(reverse = TRUE)) + 
+    scale_fill_manual(values = c("#1f78b4", "#a6cee3", "#b2df8a"), 
+                      breaks = c("many", "some", "few")) +
+    scale_y_continuous(expand = c(0, 0)) +
+    labs(x = "Year", y = "Predicted probability", fill = "No. flowers")
 
+  # What month do chollas usually start flowering?
+  flowerstart <- timings$q0.10[timings$common_name == "buck-horn cholla" &
+                                 timings$phenophase_description == "Flowers or flower buds"]
+  month(parse_date_time(x = flowerstart, orders = "j")) # March
+  
+  # Summarize precip and rain from preceding 6 months (Oct-Mar)
+  weather_summary <- weather %>%
+    mutate(yr = year(date),
+           month = month(date)) %>%
+    filter(month %in% c(10:12, 1:3)) %>%
+    mutate(season = ifelse(month %in% 10:12, yr + 1, yr)) %>%
+    group_by(site_name, season) %>%
+    summarize(ppt = sum(ppt),
+              tmean = mean(tmean),
+              tmin = mean(tmin),
+              tmax = mean(tmax),
+              .groups = "keep") %>%
+    rename(yr = season) %>%
+    data.frame()
+  
+  # Visualize weather data
+  weather_summary %>%
+    tidyr::pivot_longer(
+      cols = ppt:tmax,
+      names_to = "variable",
+      values_to = "weather"
+    ) %>%
+    ggplot() +
+    geom_line(aes(x = yr, y = weather, color = site_name)) +
+    facet_grid(variable ~., scales = "free_y") +
+    scale_x_continuous(breaks = sort(unique(weather_summary$yr))) +
+    theme_bw() +
+    theme(legend.position = "bottom") +
+    labs(y = "Weather (deg C or mm)", x = "", color = "Site")
+  cor(weather_summary[, -c(1:2)])
+  
+  # Add weather data to flower data
+  flowers_py_cholla <- flowers_py_cholla %>%
+    left_join(weather_summary, by = c("site_name", "yr")) %>%
+    mutate(pptz = (ppt - mean(ppt)) / sd(ppt),
+           tminz = (tmin - mean(tmin)) / sd(tmin),
+           tmeanz = (tmean - mean(tmean)) / sd(tmean),
+           tmaxz = (tmax - mean(tmax)) / sd(tmax))
+  
+  m_pptRE <- clmm(abund ~ pptz + (1|id), Hess = TRUE, nAGQ = 10,
+                  data = flowers_py_cholla)
+  summary(m_pptRE)
+  m_tminRE <- clmm(abund ~ tminz + (1|id), Hess = TRUE, nAGQ = 10,
+                   data = flowers_py_cholla)
+  summary(m_tminRE)
+  m_tmeanRE <- clmm(abund ~ tmeanz + (1|id), Hess = TRUE, nAGQ = 10,
+                    data = flowers_py_cholla)
+  summary(m_tmeanRE)
+  m_tmaxRE <- clmm(abund ~ tmaxz + (1|id), Hess = TRUE, nAGQ = 10,
+                   data = flowers_py_cholla)
+  summary(m_tmaxRE)
+  AIC(m_yrRE, m_pptRE, m_tminRE, m_tmeanRE, m_tmaxRE)
+  
+  # Better to include multiple weather variables?
+  m_ppttmaxRE <- clmm(abund ~ pptz + tmaxz + (1|id), Hess = TRUE, nAGQ = 10,
+                      data = flowers_py_cholla)
+  anova(m_ppttmaxRE, m_pptRE)
+  m_ppttmeanRE <- clmm(abund ~ pptz + tmeanz + (1|id), Hess = TRUE, nAGQ = 10,
+                       data = flowers_py_cholla)
+  anova(m_ppttmeanRE, m_pptRE)
+  m_ppttminRE <- clmm(abund ~ pptz + tminz + (1|id), Hess = TRUE, nAGQ = 10,
+                      data = flowers_py_cholla)
+  anova(m_ppttminRE, m_pptRE)
+  # Precip model is the best, and adding any temperature variables doesn't help
+  # Precip model is ok, but AIC is still 2 points loower for the year model
+  
+  # Visualize effects of precipitation
+  m_pptRE2 <- clmm2(abund ~ pptz, random = id, Hess = TRUE, nAGQ = 10,
+                    data = flowers_py_cholla)
+  nd <- expand.grid(
+    abund = sort(unique(flowers_py_cholla$abund)),
+    pptz = seq(min(flowers_py_cholla$pptz), 
+               max(flowers_py_cholla$pptz), length = 100),
+    KEEP.OUT.ATTRS = FALSE 
+  )
+  nd %>%
+    bind_cols(pred = predict(m_pptRE2, newdata = nd)) %>%
+    ggplot(aes(x = pptz, y = pred)) +
+    geom_line(aes(color = abund)) +
+    labs(x = "Precipitation (z-score)", 
+         y = "Predicted probability", 
+         color = "No. flowers")
+  # TODO: Figure out how to add uncertainty ####################################
+  
+  
   # saguaro -------------------------------------------------------------------#
   # Aggregate data for each plant-year: saguaro
   flowers_py_sag <- flowers %>%
@@ -1111,4 +1193,45 @@ count(filter(si, intensity_label == "No. fruit/seed drop"),
   AIC(m_null, m_site, m_fyr, m_spp, m_sitesppfyr)
   # Full additive model very slightly better than year model, but even that is
   # <5 points different than null model so no strong patterns.
+
+   
+# An ordinal model for flowers, buck-horn cholla using MASS::polr() -----------#
+  
+  flowers_py_cholla$site <- factor(flowers_py_cholla$site_name)
+  flowers_py_cholla$fyr <- factor(flowers_py_cholla$yr)
+  
+  # By default, logistic regression (could change to probit)
+  m1 <- polr(abund ~ site, Hess = TRUE, data = flowers_py_cholla)
+  summary(m1)
+  # p-values (really only valid for larger sample sizes)
+  ctable <- coef(summary(m1))
+  p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
+  (ctable <- cbind(ctable, "p value" = round(p, 3)))
+  # confidence intervals (profiling likelihood function)
+  ci <- confint(m1)
+  # confidence intervals (assuming normality)
+  ci <- confint.default(m1)
+  # Odds ratios
+  exp(cbind(OR = coef(m1), ci))
+  
+  # Predicted probabilities (could include new values for continuous covs in model)
+  newdat <- data.frame(
+    site = sort(unique(flowers_py_cholla$site))
+  )
+  newdat <- cbind(newdat, round(predict(m1, newdat, type = "probs"), 3))
+  newdat  
+  
+  # Mean rank/category for each species
+  summary(lsmeans::lsmeans(m1, pairwise ~ site, mode = "mean"), type="response")$lsmeans
+  
+  m2 <- polr(abund ~ fyr, Hess = TRUE, data = flowers_py_cholla)
+  summary(m2)
+  m3 <- polr(abund ~ site + fyr, Hess = TRUE, data = flowers_py_cholla)
+  summary(m3)
+  m4 <- polr(abund ~ site * fyr, Hess = TRUE, data = flowers_py_cholla)
+  summary(m4)
+  # Warning about rank-deficient design
+  
+  AIC(m1, m2, m3)
+  # Additive model slightly better than year alone
   

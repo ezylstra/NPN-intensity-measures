@@ -4,9 +4,11 @@
 library(dplyr)
 library(stringr)
 library(lubridate)
+library(tidyr)
 library(ggplot2)
 # library(MASS)
 library(ordinal)
+library(brms)
 
 # Plant phenophase classes
 leaf_classes <- 1:5
@@ -478,7 +480,154 @@ count(flowers, common_name, intensity_midpoint)
 # max counts in that range for all species except jojoba, but will revisit this
 # later
 
- # buck-horn cholla -----------------------------------------------------------#
+  # saguaro -------------------------------------------------------------------#
+  # Aggregate data for each plant-year: saguaro
+  flowers_py_sag <- flowers %>%
+    filter(common_name == "saguaro") %>%
+    group_by(common_name, id, site_name, lat, lon, yr) %>%
+    summarize(n_obs = n(),
+              n_inphase = sum(status),
+              max_count = max(intensity_midpoint),
+              .groups = "keep") %>%
+    data.frame()
+  flowers_py_sag
+  count(filter(gamdf, common_name == "saguaro" & intensity_short == "Flowers"),
+        intensity_midpoint, intensity_value)
+  count(flowers_py_sag, max_count)
+  # 0:                        1/63
+  # Less than 3 (1):          1/63
+  # 3 to 10 (5):              7/63
+  # 11 to 100 (50):          20/63
+  # 101 to 1000 (500):       27/63
+  # More than 1,000 (1001):   7/63
+  
+  # Will try same grouping as buck-horn cholla:
+  # 0-5 (few), 50 (some), 500-1001 (many)
+  flowers_py_sag <- flowers_py_sag %>%
+    mutate(abund = case_when(
+      max_count == 0 ~ "few",
+      max_count == 1 ~ "few",
+      max_count == 5 ~ "few",
+      max_count == 50 ~ "some",
+      max_count >= 500 ~ "many",
+    )) %>%
+    mutate(abund = factor(abund, levels = c("few", "some", "many")))
+  
+  # Visualize for each year
+  flowers_pya_sag <- flowers_py_sag %>%
+    mutate(fyr = factor(yr)) %>%
+    mutate(site = factor(site_name)) %>%
+    group_by(common_name, fyr, site, abund) %>%
+    summarize(n = n(), .groups = "keep") %>%
+    data.frame()
+  ggplot(flowers_pya_sag, aes(y = abund, x = fyr)) +
+    geom_point(aes(size = n)) +
+    facet_grid(site ~ .) +
+    scale_y_discrete(labels = c("0-5", "50", "500+")) +
+    scale_size_continuous(breaks = 1:3, range = c(2, 4)) +
+    labs(x = "", y = "Abundance category", size = "No. plants", 
+         title = "saguaro, flowers")
+  
+  flowers_py_sag$site <- factor(flowers_py_sag$site_name)
+  flowers_py_sag$fyr <- factor(flowers_py_sag$yr)
+  flowers_py_sag$id <- factor(flowers_py_sag$id)  
+
+  # ML model: year with plant RE
+  m_yrRE <- clmm(abund ~ fyr + (1|id), Hess = TRUE, nAGQ = 10,
+                 data = flowers_py_sag)
+  # Hessian numerically singular warning (no SEs). Probably because all plants
+  # had 500+ count in 2018 (and no plants monitored at Gateway that year)
+  
+  # ML model: site with plant RE
+  m_siteRE <- clmm(abund ~ site + (1|id), Hess = TRUE, nAGQ = 10,
+                   data = flowers_py_sag)
+  summary(m_siteRE)
+
+  # Summarize precip and rain seasonally:
+  # summer (JJA), fall (SON), winter (DJF), spring (MAM) preceding flowering
+  # (so JJA of year 1 is associated with flowering in year 2)
+  weather_summary <- weather %>%
+    mutate(yr = year(date),
+           month = month(date)) %>%
+    mutate(seasonyr = ifelse(month %in% 6:12, yr + 1, yr)) %>%
+    mutate(season = case_when(
+      month %in% 6:8 ~ "su",
+      month %in% 9:11 ~ "fa",
+      month %in% c(12, 1:2) ~ "wi",
+      month %in% 3:5 ~ "sp"
+    )) %>%
+    group_by(site_name, seasonyr, season) %>%
+    summarize(ppt = sum(ppt),
+              tmin = mean(tmin),
+              tmax = mean(tmax),
+              .groups = "keep") %>%
+    data.frame()
+  
+  weather_wide <- weather_summary %>%
+    pivot_wider(id_cols = c("site_name", "seasonyr"),
+                names_from = "season",
+                values_from = c("ppt", "tmin", "tmax"),
+                names_glue = "{season}_{.value}") %>%
+    select(-c(sp_tmin, fa_tmin, su_tmin)) %>%
+    mutate(m6_ppt = fa_ppt + wi_ppt) %>%
+    mutate(m9_ppt = su_ppt + fa_ppt + wi_ppt) %>%
+    data.frame()
+
+  # Summarize a few other things over different/longer periods:
+  weather_summary2 <- weather %>%
+    mutate(yr = year(date),
+           month = month(date)) %>%
+    mutate(seasonyr = ifelse(month %in% 6:12, yr + 1, yr)) %>%
+    group_by(site_name, seasonyr) %>%
+    # Number of freezing days and Mean of daily maximums, June - May
+    summarize(freezing = sum(tmin < 0),
+              yr_tmax = mean(tmax),
+              .groups = "keep") %>%
+    data.frame()
+  
+  # Join all weather variables
+  weather_wide <- weather_wide %>%
+    left_join(weather_summary2, by = c("site_name", "seasonyr"))
+    
+  # Add weather data to flower data
+  flowers_py_sag <- flowers_py_sag %>%
+    left_join(weather_wide, by = c("site_name" = "site_name", "yr" = "seasonyr"))
+  
+  # ML model: null
+  m_nullRE <- clmm(abund ~ 1 + (1|id), Hess = TRUE, nAGQ = 10, 
+                   data = flowers_py_sag)
+  # ML model: fall precip + winter mintemp
+  m_add3RE <- clmm(abund ~ fa_ppt + wi_tmin + (1|id), Hess = TRUE, 
+                  nAGQ = 10, data = flowers_py_sag)
+  # ML model: 6-mo precip + winter mintemp
+  m_add6RE <- clmm(abund ~ m6_ppt + wi_tmin + (1|id), Hess = TRUE, 
+                  nAGQ = 10, data = flowers_py_sag)
+
+  # Try a Bayesian model: 6-mo precip + winter mintemp with plant RE
+  
+  # First need to convert response to an ordered factor
+  flowers_py_sag$abund <- ordered(flowers_py_sag$abund,
+                                  levels = c("few", "some", "many"))
+  
+  m_add6B <- brm(abund ~ m6_ppt + wi_tmin + (1|id), 
+                 data = flowers_py_sag, 
+                 family = cumulative("logit"))
+  summary(m_add6B)
+  # Takes a while to compile, but then samples quickly. Default settings more 
+  # than sufficient for Rhat, ESS
+  # Results similar, but not identical to clmm()
+  
+  conditional_effects(m_add6B, categorical = TRUE)
+  
+  m_int6B <- brm(abund ~ m6_ppt * wi_tmin + (1|id), 
+                 data = flowers_py_sag, 
+                 family = cumulative("logit"))
+  summary(m_int6B)
+
+  
+  
+
+  # buck-horn cholla -----------------------------------------------------------#
   # Aggregate data for each plant-year: buck-horn cholla
   flowers_py_cholla <- flowers %>%
     filter(common_name == "buck-horn cholla") %>%
@@ -697,83 +846,6 @@ count(flowers, common_name, intensity_midpoint)
   # TODO: Figure out how to add uncertainty ####################################
   
   
-  # saguaro -------------------------------------------------------------------#
-  # Aggregate data for each plant-year: saguaro
-  flowers_py_sag <- flowers %>%
-    filter(common_name == "saguaro") %>%
-    group_by(common_name, id, site_name, lat, lon, yr) %>%
-    summarize(n_obs = n(),
-              n_inphase = sum(status),
-              max_count = max(intensity_midpoint),
-              .groups = "keep") %>%
-    data.frame()
-  flowers_py_sag
-  count(filter(gamdf, common_name == "saguaro" & intensity_short == "Flowers"),
-        intensity_midpoint, intensity_value)
-  count(flowers_py_sag, max_count)
-  # 0:                        1/63
-  # Less than 3 (1):          1/63
-  # 3 to 10 (5):              7/63
-  # 11 to 100 (50):          20/63
-  # 101 to 1000 (500):       27/63
-  # More than 1,000 (1001):   7/63
-  
-  # Will try same grouping as buck-horn cholla:
-  # 0-5 (few), 50 (some), 500-1001 (many)
-  flowers_py_sag <- flowers_py_sag %>%
-    mutate(abund = case_when(
-      max_count == 0 ~ "few",
-      max_count == 1 ~ "few",
-      max_count == 5 ~ "few",
-      max_count == 50 ~ "some",
-      max_count >= 500 ~ "many",
-    )) %>%
-    mutate(abund = factor(abund, levels = c("few", "some", "many")))
-  
-  # Visualize for each year
-  flowers_pya_sag <- flowers_py_sag %>%
-    mutate(fyr = factor(yr)) %>%
-    mutate(site = factor(site_name)) %>%
-    group_by(common_name, fyr, site, abund) %>%
-    summarize(n = n(), .groups = "keep") %>%
-    data.frame()
-  ggplot(flowers_pya_sag, aes(y = abund, x = fyr)) +
-    geom_point(aes(size = n)) +
-    facet_grid(site ~ .) +
-    scale_y_discrete(labels = c("0-5", "50", "500+")) +
-    scale_size_continuous(breaks = 1:3, range = c(2, 4)) +
-    labs(x = "", y = "Abundance category", size = "No. plants", 
-         title = "saguaro, flowers")
-  
-  flowers_py_sag$site <- factor(flowers_py_sag$site_name)
-  flowers_py_sag$fyr <- factor(flowers_py_sag$yr)
-  
-  # Models
-  m1 <- polr(abund ~ site, Hess = TRUE, data = flowers_py_sag)
-    summary(m1)
-    # p-values (really only valid for larger sample sizes)
-    ctable <- coef(summary(m1))
-    p <- pnorm(abs(ctable[, "t value"]), lower.tail = FALSE) * 2
-    (ctable <- cbind(ctable, "p value" = round(p, 3)))
-
-  m2 <- polr(abund ~ fyr, Hess = TRUE, data = flowers_py_sag)
-  summary(m2)
-  m3 <- polr(abund ~ site + fyr, Hess = TRUE, data = flowers_py_sag)
-  summary(m3)
-  # Warning: glm.fit: fitted probabilities numerically 0 or 1 occurred 
-  m4 <- polr(abund ~ site * fyr, Hess = TRUE, data = flowers_py_sag)
-  summary(m4)
-  # Warning about rank-deficient design (didn't encounter this when 
-  # 0 max counts were excluded). Could also group 0 with 1-5...
-  
-  AIC(m1, m2)
-  # Site model much better than year (ignoring other 2 models)
-  
-  # Strong evidence that max flower counts differed among sites, with most 
-  # saguaros at Brown's Ranch always having 500+ flowers (would be good to 
-  # know something about size/age). Does look like some annual variation, but
-  # maybe not consistent among sites and some estimation difficulties because
-  # all plants monitored in 2018 had 500+ max counts.
 
   # jojoba --------------------------------------------------------------------#
   # Aggregate data for each plant-year: jojoba
@@ -1123,7 +1195,7 @@ count(filter(si, intensity_label == "No. fruit/seed drop"),
 # Might be able to model multiple species together for this phenophase since
 # the "More than X" intensity category was very rarely used.
 
-  # Trying to model mutliple species together ---------------------------------#
+  # Trying to model multiple species together ---------------------------------#
   # Keeping it to the 3 species I used for flowers, fruit
   # Aggregate data for each plant-year and species
   drop_py <- drop %>%

@@ -270,15 +270,15 @@ weather <- read.csv("weather-data/desert-plant-20112024.csv")
 normsfile <- list.files(prism_folder, 
                         full.names = TRUE,
                         pattern = "30yr")
-norms <- read.csv(normsfile, 
+norms <- read.csv(normsfile,
                   header = FALSE,
                   skip = 11,
                   col.names = c("site_id", "lon", "lat", "elev",
-                                "mon", "ppt", "tmean")) %>%
-  filter(mon == "Annual") %>%
-  select(-c(lon, lat, mon, elev)) %>%
-  rename(ppt_norm = ppt,
-         tmean_norm = tmean)
+                                "mon", "ppt30", "tmin30", "tmean30", 
+                                "tmax30")) %>%
+  filter(mon != "Annual") %>%
+  mutate(month = as.integer(factor(mon, levels = month.name))) %>%
+  select(-c(lon, lat, elev, mon))
 
 # Summarize data by species ---------------------------------------------------#
 
@@ -455,14 +455,6 @@ count(flowers, intensity_midpoint) %>%
   mutate(prop = round(n / sum(n), 3))
 count(flowers, common_name, intensity_midpoint)
 
-# Would like to model data for multiple species simultaneously, but they have 
-# different intensity categories, so I'd have to create bins that work for all. 
-  # Max category == "More than 1,000": Barrel cacus, cassia, cholla, saguaro
-  # Max category == "More than 10,000": jojoba, soaptree yucca, velvet mesquite
-# Might be able to combine anything over 1000 since there are relatively few
-# max counts in that range for all species except jojoba, but will revisit this
-# later
-
   # saguaro -------------------------------------------------------------------#
   # Aggregate data for each plant-year: saguaro
   flower_sag <- flowers %>%
@@ -567,9 +559,39 @@ count(flowers, common_name, intensity_midpoint)
               tmax_6 = mean(tmax[season %in% c("su", "fa")]),
               tmax_12 = mean(tmax),
               .groups = "keep") %>%
-    filter(seasonyr > 2011) %>%
-    filter(seasonyr < 2025) %>%
+    filter(seasonyr %in% unique(flower_sag$yr)) %>%
     data.frame()
+  
+  # Want to calculate anomalies, so, first calculate 30-year normals
+  normvars <- norms %>%
+    group_by(site_id) %>%
+    summarize(tmin_wi_30 = mean(tmin30[month %in% c(12, 1:2)]),
+              ppt_fa_30 = sum(ppt30[month %in% 9:11]),
+              ppt_6_30 = sum(ppt30[month %in% c(9:12, 1:2)]),
+              ppt_9_30 = sum(ppt30[month %in% c(6:12, 1:2)]),
+              tmax_su_30 = mean(tmax30[month %in% 6:8]),
+              tmax_fa_30 = mean(tmax30[month %in% 9:11]),
+              tmax_wi_30 = mean(tmax30[month %in% c(12, 1:2)]),
+              tmax_sp_30 = mean(tmax30[month %in% 3:5]),
+              tmax_6_30 = mean(tmax30[month %in% 6:11]),
+              tmax_12_30 = mean(tmax30),
+              # Overall mean annual temperature, precipitation
+              tmean_30 = mean(tmean30),
+              ppt_30 = sum(ppt30)) %>%
+    data.frame()
+  # Merge normals with annual weather and calculate anomalies
+  weathervars <- weathervars %>%
+    left_join(normvars, by = "site_id") %>%
+    mutate(tmin_wi_a = tmin_wi - tmin_wi_30,
+           ppt_fa_a = ppt_fa - ppt_fa_30,
+           ppt_6_a = ppt_6 - ppt_6_30,
+           ppt_9_a = ppt_9 - ppt_9_30,
+           tmax_su_a = tmax_su - tmax_su_30,
+           tmax_fa_a = tmax_fa - tmax_fa_30,
+           tmax_wi_a = tmax_wi - tmax_wi_30,
+           tmax_sp_a = tmax_sp - tmax_sp_30,
+           tmax_6_a = tmax_6 - tmax_6_30,
+           tmax_12_a = tmax_12 - tmax_12_30)
   
   # Where are the monitored saguaros?
   sag_locs <- flower_sag %>%
@@ -578,7 +600,7 @@ count(flowers, common_name, intensity_midpoint)
     summarize(n_plants = n_distinct(id),
               n_yrs = n_distinct(yr),
               .groups = "keep") %>%
-    left_join(norms, by = "site_id") %>%
+    left_join(normvars, by = "site_id") %>%
     data.frame()
   
   # Geographic location
@@ -603,7 +625,7 @@ count(flowers, common_name, intensity_midpoint)
              x = 1074 - 5, y = 9, hjust = 1) +
     theme_bw()
   ggplot(sag_locs) +
-    geom_point(aes(x = tmean_norm, y = ppt_norm, color = elev),
+    geom_point(aes(x = tmean_30, y = ppt_30, color = elev),
                size = 2) +
     scale_color_viridis_c() +
     labs(x = "Mean annual temperature (degC)", 
@@ -613,23 +635,22 @@ count(flowers, common_name, intensity_midpoint)
   # One much higher elevation (1195), colder, wetter than rest (SW of Tucson)
   # One of the lowest elevation sites (397) is much drier than expected (W of Phoenix)
     
-  # Add weather data to flowering dataset
+  # Add weather data to flowering dataset (and standardize)
   flower_sag <- flower_sag %>%
     left_join(weathervars, by = c("site_id" = "site_id", "yr" = "seasonyr")) %>%
-    left_join(norms, by = "site_id") %>%
-    mutate(tmin_wi_z = (tmin_wi - mean(tmin_wi)) / sd(tmin_wi),
+    mutate(tmin_wi_z = (tmin_wi_a - mean(tmin_wi_a)) / sd(tmin_wi_a),
            freeze_z = (freeze - mean(freeze)) / sd(freeze),
-           ppt_fa_z = (ppt_fa - mean(ppt_fa)) / sd(ppt_fa),
-           ppt_6_z = (ppt_6 - mean(ppt_6)) / sd(ppt_6),
-           ppt_9_z = (ppt_9 - mean(ppt_9)) / sd(ppt_9),
-           tmax_su_z = (tmax_su - mean(tmax_su)) / sd(tmax_su),
-           tmax_fa_z = (tmax_fa - mean(tmax_fa)) / sd(tmax_fa),
-           tmax_wi_z = (tmax_wi - mean(tmax_wi)) / sd(tmax_wi),
-           tmax_sp_z = (tmax_sp - mean(tmax_sp)) / sd(tmax_sp),
-           tmax_6_z = (tmax_6 - mean(tmax_6)) / sd(tmax_6),
-           tmax_12_z = (tmax_12 - mean(tmax_12)) / sd(tmax_12),
-           ppt_norm_z = (ppt_norm - mean(ppt_norm)) / sd(ppt_norm),
-           tmean_norm_z = (tmean_norm - mean(tmean_norm)) / sd(tmean_norm))
+           ppt_fa_z = (ppt_fa_a - mean(ppt_fa_a)) / sd(ppt_fa_a),
+           ppt_6_z = (ppt_6_a - mean(ppt_6_a)) / sd(ppt_6_a),
+           ppt_9_z = (ppt_9_a - mean(ppt_9_a)) / sd(ppt_9_a),
+           tmax_su_z = (tmax_su_a - mean(tmax_su_a)) / sd(tmax_su_a),
+           tmax_fa_z = (tmax_fa_a - mean(tmax_fa_a)) / sd(tmax_fa_a),
+           tmax_wi_z = (tmax_wi_a - mean(tmax_wi_a)) / sd(tmax_wi_a),
+           tmax_sp_z = (tmax_sp_a - mean(tmax_sp_a)) / sd(tmax_sp_a),
+           tmax_6_z = (tmax_6_a - mean(tmax_6_a)) / sd(tmax_6_a),
+           tmax_12_z = (tmax_12_a - mean(tmax_12_a)) / sd(tmax_12_a),
+           ppt_norm_z = (ppt_30 - mean(ppt_30)) / sd(ppt_30),
+           tmean_norm_z = (tmean_30 - mean(tmean_30)) / sd(tmean_30))
 
   # Run ML ordinal models (4 cats) with plant random effects
   # Year with plant RE
@@ -668,8 +689,7 @@ count(flowers, common_name, intensity_midpoint)
                    Hess = TRUE, data = flower_sag)
   summary(m_ppt_9b)
   anova(m_ppt_9, m_ppt_9b) # Adding mean precip didn't help
-  # (note: check that we still needed site RE if mean ppt was in there)
-  
+
   # Winter minimum temperatures
   m_tmin <- clmm(abund4 ~ tmin_wi_z + (1|id) + (1|site), Hess = TRUE,
                  data = flower_sag)
@@ -688,7 +708,7 @@ count(flowers, common_name, intensity_midpoint)
   m_tmini <- clmm(abund4 ~ tmin_wi_z * tmean_norm_z + (1|id), nAGQ = 10, 
                   Hess = TRUE, data = flower_sag)
   anova(m_tmin, m_tmini)
-  # A model with an interaction is marginally better (P = 0.09)
+  # A model with an interaction is not a lot better (P = 0.16)
   summary(m_tmini)
   
   # Re-run model with clmm2 (for predict)
@@ -717,7 +737,7 @@ count(flowers, common_name, intensity_midpoint)
     geom_line(aes(color = abund4), linewidth = 1.3) +
     scale_color_brewer(palette = "BrBG") +
     facet_grid(mean_temp ~ .) +
-    labs(x = "Winter min temp (z)", y = "Probability", color = "Flowers") +
+    labs(x = "Winter min temp anomaly (z)", y = "Probability", color = "Flowers") +
     theme_bw()
   # Results are interesting: Cold site is very different than average/warm.
   # At average/warm site: 
@@ -730,7 +750,7 @@ count(flowers, common_name, intensity_midpoint)
   # winter. Probability of no/few flowers higher in cold winter and lower in 
   # warm winter. Probability of some flowers increases with winter temps. 
   
-  # Combine 9-moo precipitation and winter temperatures (additive)
+  # Combine 9-mo precipitation and winter temperatures (additive)
   m_comb <- clmm(abund4 ~ ppt_9_z + tmin_wi_z * tmean_norm_z + (1|id), 
                  nAGQ = 10, Hess = TRUE, data = flower_sag)
   summary(m_comb)
@@ -742,9 +762,9 @@ count(flowers, common_name, intensity_midpoint)
                   nAGQ = 10, Hess = TRUE, data = flower_sag)
   summary(m_combi)
   anova(m_comb, m_combi)
-  anova(m_comb, m_ppt_9)  
+  anova(m_ppt_9, m_combi)  
   AIC(m_yr2, m_ppt_9, m_tmin, m_tmini, m_comb, m_combi)
-  # Best is year model, then ppt, then 3-way interaction
+  # Best is year model, then 3-way interaction, then ppt
   
   # Re-run model with clmm2 (for predict)
   m_combi2 <- clmm2(abund4 ~ ppt_9_z * tmin_wi_z * tmean_norm_z, random = id, 
@@ -790,12 +810,456 @@ count(flowers, common_name, intensity_midpoint)
          color = "Flowers") +
     theme_bw()
 
-  # Could replace mean annual temps with elevation
+  # Does it change things if we replace mean annual temps with elevation?
+  flower_sag <- flower_sag %>%
+    mutate(elev_z = (elev - mean(elev)) / sd(elev))
+  m_tminielev <- clmm(abund4 ~ tmin_wi_z * elev_z + (1|id), nAGQ = 10,
+                   Hess = TRUE, data =flower_sag)
+  summary(m_tminielev) # Signif interaction
+  m_combelev <- clmm(abund4 ~ ppt_9_z + tmin_wi_z * elev_z + (1|id), 
+                   nAGQ = 10, Hess = TRUE, data = flower_sag)
+  summary(m_combelev) # Precip helps, but now interaction P = 0.12
+  m_combielev <- clmm(abund4 ~ ppt_9_z * tmin_wi_z * elev_z + (1|id), 
+                      nAGQ = 10, Hess = TRUE, data = flower_sag)
+  summary(m_combielev)
+  AIC(m_yr2, m_ppt_9, m_tmin, m_tminielev, m_combelev, m_combielev)
+  # Same as using mean temps:
+  # yr best, followed by 3-way interaction, then ppt
   
-  # Might be a good idea to convert ppt and winter temp variables to anomalies
-  # since we're likely extrapolating values (eg, a cold site may not have seen
-  # temperatures at the high end of the tmin_wi_z scores during this period)
+  m_combielev2 <- clmm2(abund4 ~ ppt_9_z * tmin_wi_z * elev_z, random = id, 
+                        nAGQ = 10, Hess = TRUE, data = flower_sag)
+
+  # Create dataframe for prediction
+  newdat_combie <- expand.grid(
+    abund4 = unique(flower_sag$abund4),
+    elev_z = c(min(flower_sag$elev_z), 0, max(flower_sag$elev_z)),
+    tmin_wi_z = c(min(flower_sag$tmin_wi_z), 0, 
+                  max(flower_sag$tmin_wi_z)),
+    ppt_9_z = seq(min(flower_sag$ppt_9_z), max(flower_sag$ppt_9_z), 
+                  length = 100),
+    KEEP.OUT.ATTRS = FALSE
+  )
+  # Plot predictions (= probability that saguaro will have X flowers
+  # given 9-month precipitation for cold/average/warm winter min temps at a 
+  # cold/average/warm site)
+  preds_combie <- cbind(newdat_combie, 
+                       est = predict(m_combielev2, newdata = newdat_combie)) %>%
+    arrange(abund4, elev_z, tmin_wi_z, ppt_9_z) %>%
+    mutate(loc = case_when(
+      elev_z == min(flower_sag$elev_z) ~ "low elev",
+      elev_z == 0 ~ "average elev",
+      elev_z == max(flower_sag$elev_z) ~ "high elev",
+    )) %>%
+    mutate(winter = case_when(
+      tmin_wi_z == min(flower_sag$tmin_wi_z) ~ "cold winter",
+      tmin_wi_z == 0 ~ "average winter",
+      tmin_wi_z == max(flower_sag$tmin_wi_z) ~ "warm winter"
+    )) %>%
+    mutate(loc = factor(loc, 
+                        levels = c("high elev", "average elev", "low elev"))) %>%
+    mutate(winter = factor(winter, 
+                           levels = c("cold winter", "average winter", 
+                                      "warm winter")))
+  ggplot(preds_combie, aes(x = ppt_9_z, y = est)) +
+    geom_line(aes(color = abund4), linewidth = 1.3) +
+    scale_color_brewer(palette = "BrBG") +
+    facet_grid(loc ~ winter) +
+    labs(x = "Cumulative precipitation, 9 mo (z)", 
+         y = "Probability", 
+         color = "Flowers") +
+    theme_bw()
   
+  # Does it matter if we throw out the observations of one saguaro that's way
+  # higher elevation and was only observed in 2 years?
+  flower_sag2 <- flower_sag %>%
+    filter(elev < 1100) %>%
+    # Re-calculate z-scores
+    mutate(tmin_wi_z = (tmin_wi_a - mean(tmin_wi_a)) / sd(tmin_wi_a),
+           freeze_z = (freeze - mean(freeze)) / sd(freeze),
+           ppt_fa_z = (ppt_fa_a - mean(ppt_fa_a)) / sd(ppt_fa_a),
+           ppt_6_z = (ppt_6_a - mean(ppt_6_a)) / sd(ppt_6_a),
+           ppt_9_z = (ppt_9_a - mean(ppt_9_a)) / sd(ppt_9_a),
+           tmax_su_z = (tmax_su_a - mean(tmax_su_a)) / sd(tmax_su_a),
+           tmax_fa_z = (tmax_fa_a - mean(tmax_fa_a)) / sd(tmax_fa_a),
+           tmax_wi_z = (tmax_wi_a - mean(tmax_wi_a)) / sd(tmax_wi_a),
+           tmax_sp_z = (tmax_sp_a - mean(tmax_sp_a)) / sd(tmax_sp_a),
+           tmax_6_z = (tmax_6_a - mean(tmax_6_a)) / sd(tmax_6_a),
+           tmax_12_z = (tmax_12_a - mean(tmax_12_a)) / sd(tmax_12_a),
+           ppt_norm_z = (ppt_30 - mean(ppt_30)) / sd(ppt_30),
+           tmean_norm_z = (tmean_30 - mean(tmean_30)) / sd(tmean_30),
+           elev_z = (elev - mean(elev)) / sd(elev))
+
+  m2_yr <- clmm(abund4 ~ fyr + (1|id), nAGQ = 10, 
+                Hess = TRUE, data = flower_sag2)
+  m2_tmin <- clmm(abund4 ~ tmin_wi_z + (1|id), nAGQ = 10, 
+                  Hess = TRUE, data = flower_sag2)
+  m2_tmini <- clmm(abund4 ~ tmin_wi_z * tmean_norm_z + (1|id), nAGQ = 10, 
+                   Hess = TRUE, data = flower_sag2)
+  m2_tminielev <- clmm(abund4 ~ tmin_wi_z * elev_z + (1|id), nAGQ = 10, 
+                       Hess = TRUE, data = flower_sag2)
+  m2_ppt <- clmm(abund4 ~ ppt_9_z + (1|id), nAGQ = 10, 
+                 Hess = TRUE, data = flower_sag2)
+  m2_comb <- clmm(abund4 ~ ppt_9_z + tmin_wi_z * tmean_norm_z + (1|id), 
+                  nAGQ = 10, Hess = TRUE, data = flower_sag2)
+  m2_combelev <- clmm(abund4 ~ ppt_9_z + tmin_wi_z * elev_z + (1|id), 
+                      nAGQ = 10, Hess = TRUE, data = flower_sag2)
+  m2_combi <- clmm(abund4 ~ ppt_9_z * tmin_wi_z * tmean_norm_z + (1|id), 
+                   nAGQ = 10, Hess = TRUE, data = flower_sag2)
+  m2_combielev <- clmm(abund4 ~ ppt_9_z * tmin_wi_z * elev_z + (1|id), nAGQ = 10, 
+                       Hess = TRUE, data = flower_sag2)
+  AIC(m2_yr, m2_ppt, m2_tmin, m2_tmini, m2_comb, m2_combi)
+  AIC(m2_yr, m2_ppt, m2_tmin, m2_tminielev, m2_combelev, m2_combielev)
   
+  m2_combielev <- clmm2(abund4 ~ ppt_9_z * tmin_wi_z * elev_z, random = id, 
+                        nAGQ = 10, Hess = TRUE, data = flower_sag2)
   
+  # Create dataframe for prediction
+  newdat_combie2 <- expand.grid(
+    abund4 = unique(flower_sag2$abund4),
+    elev_z = c(min(flower_sag2$elev_z), 0, max(flower_sag2$elev_z)),
+    tmin_wi_z = c(min(flower_sag2$tmin_wi_z), 0, 
+                  max(flower_sag2$tmin_wi_z)),
+    ppt_9_z = seq(min(flower_sag2$ppt_9_z), max(flower_sag2$ppt_9_z), 
+                  length = 100),
+    KEEP.OUT.ATTRS = FALSE
+  )
+  # Plot predictions (= probability that saguaro will have X flowers
+  # given 9-month precipitation for cold/average/warm winter min temps at a 
+  # cold/average/warm site)
+  preds_combie2 <- cbind(newdat_combie2, 
+                        est = predict(m2_combielev, newdata = newdat_combie2)) %>%
+    arrange(abund4, elev_z, tmin_wi_z, ppt_9_z) %>%
+    mutate(loc = case_when(
+      elev_z == min(flower_sag2$elev_z) ~ "low elev",
+      elev_z == 0 ~ "average elev",
+      elev_z == max(flower_sag2$elev_z) ~ "high elev",
+    )) %>%
+    mutate(winter = case_when(
+      tmin_wi_z == min(flower_sag2$tmin_wi_z) ~ "cold winter",
+      tmin_wi_z == 0 ~ "average winter",
+      tmin_wi_z == max(flower_sag2$tmin_wi_z) ~ "warm winter"
+    )) %>%
+    mutate(loc = factor(loc, 
+                        levels = c("high elev", "average elev", "low elev"))) %>%
+    mutate(winter = factor(winter, 
+                           levels = c("cold winter", "average winter", 
+                                      "warm winter")))
+  pp <- ggplot(preds_combie2, aes(x = ppt_9_z, y = est)) +
+    geom_line(aes(color = abund4), linewidth = 1.3) +
+    scale_color_brewer(palette = "BrBG", 
+                       labels = c("0", "1-10", "11-100", '>100')) +
+    facet_grid(loc ~ winter) +
+    labs(x = "Cumulative 9-month precipitation, anomaly (standardized)", 
+         y = "Probability", 
+         color = "Flowers",
+         title = "Saguaro flowers, excluding highest site (all sites < 1100 m)") +
+    theme_bw() +
+    theme(legend.position = "bottom")
+  # ggsave("output/saguaro-flower-preds-elev.png",
+  #        pp, height = 6.5, width = 6.5, units = "in")
+
+  # velvet mesquite -----------------------------------------------------------#
+  # Aggregate data for each plant-year: velvet mesquite
+  flower_mesq <- flowers %>%
+    filter(common_name == "velvet mesquite") %>%
+    group_by(common_name, id, site_id, lat, lon, yr) %>%
+    summarize(n_obs = n(),
+              n_inphase = sum(status),
+              max_count = max(intensity_midpoint),
+              .groups = "keep") %>%
+    data.frame()
+  head(flower_mesq)
+  count(flower_mesq, yr)
+  # 2012-2018: 3, 8, 6, 1, 6, 11, 8
+  # Remove years with < 8 plants?
+  
+  flower_mesq <- flower_mesq %>%
+    group_by(yr) %>%
+    mutate(n_plants = n()) %>%
+    filter(n_plants >= 8) %>%
+    select(-n_plants) %>%
+    data.frame()
+  
+  count(flower_mesq, max_count) # 170 total
+  # 0:                        3
+  # Less than 3 (1):          1
+  # 3 to 10 (5):              1
+  # 11 to 100 (50):          20
+  # 101 to 1000 (500):       51
+  # 1001 to 10000 (5000):    78
+  # More than 10000 (10001): 16
+  
+  # Create abundance categories
+  # 0-50 (few/none), 500 (some), >= 5000 (many)
+  flower_mesq <- flower_mesq %>%
+    mutate(abund3 = case_when(
+      max_count %in% 0:50 ~ "few",
+      max_count == 500 ~ "some",
+      max_count >= 5000 ~ "many"
+    )) %>%
+    mutate(abund3 = factor(abund3, 
+                           levels = c("few", "some", "many"),
+                           ordered = TRUE))
+  
+  # Convert variables to factor
+  flower_mesq$fyr <- factor(flower_mesq$yr)
+  flower_mesq$site <- factor(flower_mesq$site_id)
+  flower_mesq$id <- factor(flower_mesq$id)
+  flower_mesq$mcdo <- factor(ifelse(flower_mesq$site_id %in% mcdo_sites, 1, 0))
+  
+  # Visualize for each year
+  ggplot(flower_mesq, aes(y = abund3, x = fyr)) +
+    geom_jitter(aes(color = mcdo), width = 0.20, height = 0.20) +
+    labs(x = "", y = "Abundance category (3)", title = "velvet mesquite, flowers")
+  
+  # Format and merge with weather data
+  # Min temps in winter (DJF)
+  # Freezing days in winter/spring (DJFMAM)
+  # Precip in fall (SON)
+  # Precip, 6 mo (fall + winter)
+  # Precip, 9 mo (summer + fall + winter)
+  # Max temps in summer (JJA)
+  # Max temps in fall (SON)
+  # Max temps in winter (DJF)  
+  # Max temps in spring (MAM)
+  # Max temps in summer + fall
+  # Max temps, 12 mo
+  weathervars <- weather %>%
+    rename(tmin = tmin_mn,
+           tmax = tmax_mn) %>%
+    # Create seasonyr to match up with flowering year
+    mutate(seasonyr = ifelse(month %in% 6:12, yr + 1, yr)) %>%
+    mutate(season = case_when(
+      month %in% 3:5 ~ "sp",
+      month %in% 6:8 ~ "su",
+      month %in% 9:11 ~ "fa",
+      .default = "wi"
+    )) %>%
+    group_by(site_id, elev, seasonyr) %>%
+    summarize(tmin_wi = mean(tmin[season == "wi"]),
+              freeze = sum(freezing),
+              ppt_fa = sum(ppt[season == "fa"]),
+              ppt_6 = sum(ppt[season %in% c("fa", "wi")]),
+              ppt_9 = sum(ppt[season != "sp"]),
+              tmax_su = mean(tmax[season == "su"]),
+              tmax_fa = mean(tmax[season == "fa"]),
+              tmax_wi = mean(tmax[season == "wi"]),
+              tmax_sp = mean(tmax[season == "sp"]),
+              tmax_6 = mean(tmax[season %in% c("su", "fa")]),
+              tmax_12 = mean(tmax),
+              .groups = "keep") %>%
+    filter(seasonyr %in% unique(flower_mesq$yr)) %>%
+    data.frame()
+  
+  # Want to calculate anomalies, so, first calculate 30-year normals
+  normvars <- norms %>%
+    group_by(site_id) %>%
+    summarize(tmin_wi_30 = mean(tmin30[month %in% c(12, 1:2)]),
+              ppt_fa_30 = sum(ppt30[month %in% 9:11]),
+              ppt_6_30 = sum(ppt30[month %in% c(9:12, 1:2)]),
+              ppt_9_30 = sum(ppt30[month %in% c(6:12, 1:2)]),
+              tmax_su_30 = mean(tmax30[month %in% 6:8]),
+              tmax_fa_30 = mean(tmax30[month %in% 9:11]),
+              tmax_wi_30 = mean(tmax30[month %in% c(12, 1:2)]),
+              tmax_sp_30 = mean(tmax30[month %in% 3:5]),
+              tmax_6_30 = mean(tmax30[month %in% 6:11]),
+              tmax_12_30 = mean(tmax30),
+              # Overall mean annual temperature, precipitation
+              tmean_30 = mean(tmean30),
+              ppt_30 = sum(ppt30)) %>%
+    data.frame()
+  # Merge normals with annual weather and calculate anomalies
+  weathervars <- weathervars %>%
+    left_join(normvars, by = "site_id") %>%
+    mutate(tmin_wi_a = tmin_wi - tmin_wi_30,
+           ppt_fa_a = ppt_fa - ppt_fa_30,
+           ppt_6_a = ppt_6 - ppt_6_30,
+           ppt_9_a = ppt_9 - ppt_9_30,
+           tmax_su_a = tmax_su - tmax_su_30,
+           tmax_fa_a = tmax_fa - tmax_fa_30,
+           tmax_wi_a = tmax_wi - tmax_wi_30,
+           tmax_sp_a = tmax_sp - tmax_sp_30,
+           tmax_6_a = tmax_6 - tmax_6_30,
+           tmax_12_a = tmax_12 - tmax_12_30)
+  
+  # Where are the monitored velvet mesquites?
+  mesq_locs <- flower_mesq %>%
+    left_join(distinct(weathervars, site_id, elev), by = "site_id") %>%
+    group_by(site_id, lat, lon, elev) %>%
+    summarize(n_plants = n_distinct(id),
+              n_yrs = n_distinct(yr),
+              .groups = "keep") %>%
+    left_join(normvars, by = "site_id") %>%
+    data.frame()
+  
+  # Geographic location
+  # ggplot(mesq_locs, aes(x = lon, y = lat)) +
+  #   geom_point(aes(size = n_plants)) +
+  #   scale_size_continuous(breaks = c(1, 5, 10), range = c(2, 5))
+  leaflet(mesq_locs) %>% addTiles() %>%
+    addCircleMarkers(~lon, ~lat, radius = ~n_plants, fillOpacity = 0.6)
+  
+  # Elevation, Climate norms
+  ggplot(mesq_locs, aes(x = elev)) +
+    geom_histogram(bins = 30, fill = "gray") +
+    labs(x = "Elevation (m)", y = "No. sites") +
+    geom_vline(aes(xintercept = mean(elev)), color = "steelblue4",
+               linetype = "dashed") +
+    annotate(geom = "text", label = "Mean", color = "steelblue4", 
+             x = mean(mesq_locs$elev) - 5, y = 9.5, hjust = 1) +
+    theme_bw()
+  ggplot(mesq_locs) +
+    geom_point(aes(x = tmean_30, y = ppt_30, color = elev),
+               size = 2) +
+    scale_color_viridis_c() +
+    labs(x = "Mean annual temperature (degC)", 
+         y = "Mean annual precipitation (mm)",
+         color = "Elevation (m)") +
+    theme_bw()
+  
+  # Add weather data to flowering dataset (and standardize)
+  flower_mesq <- flower_mesq %>%
+    left_join(weathervars, by = c("site_id" = "site_id", "yr" = "seasonyr")) %>%
+    mutate(tmin_wi_z = (tmin_wi_a - mean(tmin_wi_a)) / sd(tmin_wi_a),
+           freeze_z = (freeze - mean(freeze)) / sd(freeze),
+           ppt_fa_z = (ppt_fa_a - mean(ppt_fa_a)) / sd(ppt_fa_a),
+           ppt_6_z = (ppt_6_a - mean(ppt_6_a)) / sd(ppt_6_a),
+           ppt_9_z = (ppt_9_a - mean(ppt_9_a)) / sd(ppt_9_a),
+           tmax_su_z = (tmax_su_a - mean(tmax_su_a)) / sd(tmax_su_a),
+           tmax_fa_z = (tmax_fa_a - mean(tmax_fa_a)) / sd(tmax_fa_a),
+           tmax_wi_z = (tmax_wi_a - mean(tmax_wi_a)) / sd(tmax_wi_a),
+           tmax_sp_z = (tmax_sp_a - mean(tmax_sp_a)) / sd(tmax_sp_a),
+           tmax_6_z = (tmax_6_a - mean(tmax_6_a)) / sd(tmax_6_a),
+           tmax_12_z = (tmax_12_a - mean(tmax_12_a)) / sd(tmax_12_a),
+           ppt_norm_z = (ppt_30 - mean(ppt_30)) / sd(ppt_30),
+           tmean_norm_z = (tmean_30 - mean(tmean_30)) / sd(tmean_30),
+           elev_z = (elev - mean(elev)) / sd(elev))
+  
+  # Run ML ordinal models with plant random effects
+  # Year with plant RE
+  m_yr1 <- clmm(abund3 ~ fyr + (1|id), Hess = TRUE,
+                data = flower_mesq)
+  summary(m_yr1)
+  # Year with plant and site REs
+  m_yr2 <- clmm(abund3 ~ fyr + (1|id) + (1|site), Hess = TRUE,
+                data = flower_mesq)
+  summary(m_yr2) # Site effect is 0, so only plant RE moving forward
+  # Re-run 1 RE model with quadrature methods
+  m_yr <- clmm(abund3 ~ fyr + (1|id), Hess = TRUE, nAGQ = 10,
+               data = flower_mesq)
+  summary(m_yr)
+  # Just RE, no year
+  m_1 <- clmm(abund3 ~ 1 + (1|id), Hess = TRUE, nAGQ = 10,
+               data = flower_mesq)
+  anova(m_1, m_yr)
+  # No evidence of annual variation
+  
+  # Elevation
+  m_elev <- clmm(abund3 ~ elev_z + (1|id), Hess = TRUE, nAGQ = 10,
+                 data = flower_mesq)
+  summary(m_elev)
+  anova(m_elev, m_1)
+  # Negative elevation effect (P = 0.10)
+
+  # Winter minimum temperatures
+  m_tmin <- clmm(abund3 ~ tmin_wi_z + elev_z + (1|id),  
+                 Hess = TRUE, nAGQ = 10, data = flower_mesq)
+  summary(m_tmin)
+  m_tmini <- clmm(abund3 ~ tmin_wi_z * elev_z + (1|id),
+                  Hess = TRUE, nAGQ = 10, data = flower_mesq)
+  summary(m_tmini)
+  anova(m_elev, m_tmin, m_tmini) # P = 0.05, 0.11
+  AIC(m_elev, m_tmin, m_tmini) # Interaction has lowest AIC
+  # Negative winter min temperature effect, some evidence that it varies with loc
+  
+  # Precipitation
+  m_ppt_fa <- clmm(abund3 ~ ppt_fa_z + elev_z + (1|id),
+                   Hess = TRUE, nAGQ = 10, data = flower_mesq)
+  m_ppt_6 <- clmm(abund3 ~ ppt_6_z + elev_z + (1|id),
+                  Hess = TRUE, nAGQ = 10, data = flower_mesq)
+  m_ppt_9 <- clmm(abund3 ~ ppt_9_z + elev_z + (1|id),
+                  Hess = TRUE, nAGQ = 10, data = flower_mesq)
+  AIC(m_elev, m_ppt_fa, m_ppt_6, m_ppt_9)
+  summary(m_ppt_9)
+  anova(m_elev, m_ppt_9) # Slight positive effect of precip
+  
+  # Does precip effect vary with location?
+  m_ppt_9i <- clmm(abund3 ~ ppt_9_z * elev_z + (1|id),
+                   Hess = TRUE, nAGQ = 10, data = flower_mesq)
+  summary(m_ppt_9i)
+  anova(m_ppt_9, m_ppt_9i)
+  # No strong evidence of spatial variation
+  
+  # Maximum temperatures
+  m_tmax_su <- clmm(abund3 ~ tmax_su_z + elev_z + (1|id), 
+                    Hess = TRUE, nAGQ = 10, data = flower_mesq)
+  m_tmax_fa <- clmm(abund3 ~ tmax_fa_z + elev_z + (1|id), 
+                    Hess = TRUE, nAGQ = 10, data = flower_mesq)
+  m_tmax_wi <- clmm(abund3 ~ tmax_wi_z + elev_z + (1|id), 
+                    Hess = TRUE, nAGQ = 10, data = flower_mesq)
+  m_tmax_6 <- clmm(abund3 ~ tmax_6_z + elev_z + (1|id), 
+                   Hess = TRUE, nAGQ = 10, data = flower_mesq)
+  AIC(m_elev, m_tmax_su, m_tmax_fa, m_tmax_wi, m_tmax_6)
+  summary(m_tmax_fa)
+  # Fall slightly better model, with temperatures having a negative effect
+  
+  # Do temperature effects vary with location?
+  m_tmax_fai <- clmm(abund3 ~ tmax_fa_z * elev_z + (1|id), 
+                     Hess = TRUE, nAGQ = 10, data = flower_mesq)
+  summary(m_tmax_fai)
+  anova(m_tmax_fa, m_tmax_fai)
+  # No strong evidence of spatial variation
+  
+  # Full model
+  m_full <- clmm(abund3 ~ elev_z + tmin_wi_z + elev_z:tmin_wi_z +
+                   ppt_9_z + tmax_fa_z + (1|id),  
+                 Hess = TRUE, nAGQ = 10, data = flower_mesq)
+  summary(m_full)
+  anova(m_full, m_tmini)
+  AIC(m_elev, m_tmini, m_full)
+  # Minimum temperatures model better than full
+  
+  # Re-run model with clmm2 (for predict)
+  m_tmini2 <- clmm2(abund3 ~ tmin_wi_z * elev_z, random = id, nAGQ = 10, 
+                    Hess = TRUE, data = flower_mesq)
+  # Create dataframe for prediction
+  newdat <- expand.grid(
+    abund3 = unique(flower_mesq$abund3),
+    elev_z = c(min(flower_mesq$elev_z), 0, 
+               max(flower_mesq$elev_z)),
+    tmin_wi_z = seq(min(flower_mesq$tmin_wi_z), max(flower_mesq$tmin_wi_z), 
+                    length = 100),
+    KEEP.OUT.ATTRS = FALSE
+  )
+  # Plot predictions (= probability that saguaro will have X flowers
+  # given winter min temperatures for a cold/average/warm site)
+  preds <- cbind(newdat, est = predict(m_tmini2, newdata = newdat)) %>%
+    arrange(abund3, elev_z, tmin_wi_z) %>%
+    mutate(loc = case_when(
+      elev_z == min(flower_mesq$elev_z) ~ "low elev",
+      elev_z == 0 ~ "average elev",
+      elev_z == max(flower_mesq$elev_z) ~ "high elev",
+    )) %>%
+    mutate(loc = factor(loc, levels = c("high elev", "average elev", "low elev")))
+  ppm <- ggplot(preds, aes(x = tmin_wi_z, y = est)) +
+    geom_line(aes(color = abund3), linewidth = 1.3) +
+    scale_color_manual(values = c("#a6611a", "#80cdc1", "#018571"), 
+                       labels = c("0-100", "101-1000", ">1000")) +
+    facet_grid(loc ~ .) +
+    labs(x = "Winter minimum temperature anomaly (standardized)", 
+         y = "Probability", 
+         color = "Flowers",
+         title = "Velvet mesquite flowers") +
+    theme_bw() +
+    theme(legend.position = "bottom")
+  # ggsave("output/mesquite-flower-preds-elev.png",
+  #        ppm, height = 6.5, width = 6.5, units = "in")
+  
+  # jojoba --------------------------------------------------------------------#
+  # Tried some models for jojoba, but things were coming out odd.
+  # Strong, negative effect of elevation, but that could be driven by one very
+  # high-elevation site that monitored 3 plants in one year
+  # Strong effect of spring temperatures, but jojoba can flower almost anytime, 
+  # so in some plants those temperatures are occurring after flowering commenced.
+  # Leaving jojoba for now.
   

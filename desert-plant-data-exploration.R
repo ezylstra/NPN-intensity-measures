@@ -1263,3 +1263,49 @@ count(flowers, common_name, intensity_midpoint)
   # so in some plants those temperatures are occurring after flowering commenced.
   # Leaving jojoba for now.
   
+# -----------------------------------------------------------------------------#
+# Exploring correlations between flower and fruit counts ----------------------#
+
+# Going back to si dataframe (before we did some filtering)
+# Summarize amount and quality of information for each plant, phenophase, year
+ppy <- si %>%
+  left_join(select(timings, common_name, phenophase_description, 
+                   q0.10, q0.25, q0.75, q0.90), 
+            by = c("common_name", "phenophase_description")) %>%
+  mutate(in50 = ifelse(day_of_year >= q0.25 & day_of_year <= q0.75, 1, 0)) %>%
+  mutate(in80 = ifelse(day_of_year >= q0.10 & day_of_year <= q0.90, 1, 0)) %>%
+  group_by(common_name, individual_id, site_id, phenophase_description, yr) %>%
+  summarize(obs = n(),
+            first_obs = min(day_of_year),
+            last_obs = max(day_of_year),
+            obs50 = sum(in50),
+            obs80 = sum(in80),
+            mean_int = round(mean(interval, na.rm = TRUE), 2),
+            max_int = ifelse(obs ==1, NA, max(interval, na.rm = TRUE)),
+            inphase = sum(phenophase_status),
+            intvalue = sum(!is.na(intensity_value)),
+            prop_inphase = round(inphase / obs, 2),
+            prop_intvalue = round(intvalue / inphase, 2),
+            max_intensity = ifelse(sum(is.na(intensity_midpoint)) == n(),
+                                   NA, max(intensity_midpoint, na.rm = TRUE)),
+            .groups = "keep") %>%
+  data.frame()
+
+# Summarize data on flowers/fruits for each plant and year
+ff_ppy <- ppy %>%
+  filter(phenophase_description %in% c("Flowers or flower buds", "Fruits")) %>%
+  mutate(php = ifelse(phenophase_description == "Fruits", "fr", "fl")) %>%
+  pivot_wider(
+    id_cols = c(common_name, individual_id, yr),
+    names_from = php,
+    names_glue = "{php}_{.value}",
+    values_from = c(obs, inphase, intvalue, obs50, obs80)
+  ) %>%
+  data.frame() %>%
+  # Convert any NAs to 0s for number of observations (happened when there were
+  # observations for one phenophase but not the other in a given year)
+  mutate(across(fl_obs:fr_obs80, \(x) replace_na(x, 0)))
+
+# Identify plant-years that have a sufficient number of observations of both 
+# during appropriate periods that would make it worth evaluating correlations
+

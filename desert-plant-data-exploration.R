@@ -9,6 +9,8 @@ library(ggplot2)
 library(ordinal)
 library(brms)
 library(leaflet)
+library(geosphere)
+library(mgcv)
 
 # Plant phenophase classes
 leaf_classes <- 1:5
@@ -1350,3 +1352,246 @@ corplot <- fff_ppy %>%
 # High correlations between max number of flowers and fruit in cholla (0.71) 
 # and saguaro (0.67), less so with mesquite (0.50) and almost none with 
 # jojoba (0.19). 
+
+# -----------------------------------------------------------------------------#
+# How does timing of max #flowers relate to flower/open flower phenophases? ---#
+# (need to have run though at least line 615)
+
+# Might need to look at data near Phoenix and Tucson separately
+tucson <- data.frame(lon = -110.9742, lat = 32.2540)
+phoenix <- data.frame(lon = -112.0777, lat = 33.4482)
+
+sag_locs <- sag_locs %>% 
+  mutate(dist_tuc = geosphere::distHaversine(cbind(lon, lat),
+                                             cbind(tucson$lon, tucson$lat))) %>%
+  mutate(dist_tuc = dist_tuc / 1000) %>%
+  mutate(tucson = ifelse(dist_tuc < 35, 1, 0)) %>%
+  mutate(dist_phx = geosphere::distHaversine(cbind(lon, lat),
+                                             cbind(phoenix$lon, phoenix$lat))) %>%
+  mutate(dist_phx = dist_phx / 1000) %>%
+  mutate(phoenix = ifelse(dist_phx < 50, 1, 0))
+
+# Check that geographic filters look ok
+leaflet(sag_locs) %>% addTiles() %>%
+  addCircleMarkers(~lon, ~lat, radius = ~n_plants, fillOpacity = 0.6) %>%
+  addCircleMarkers(~lon, ~lat, radius = ~n_plants, fillOpacity = 0.6,
+                   data = filter(sag_locs, tucson == 1), color = "red") %>%
+  addCircleMarkers(~lon, ~lat, radius = ~n_plants, fillOpacity = 0.6,
+                   data = filter(sag_locs, phoenix == 1), color = "red")
+
+# Will use flowers dataframe for max counts and will use si dataframe for
+# phenophase status because we don't want as many strict filters for that 
+# stuff.... Use data from 2012 on
+
+# Get timing of max flower counts (in each region)
+maxf_sag <- flowers %>%
+  filter(common_name == "saguaro") %>%
+  filter(yr >= 2012) %>%
+  # Need to recalculate Tucson/Phoenix IDs since there are a few sites that
+  # weren't included before (because there were < 10 plants monitored that year)
+  # but there's no reason to exclude them for this.
+  mutate(dist_tuc = geosphere::distHaversine(cbind(lon, lat),
+                                             cbind(tucson$lon, tucson$lat))) %>%
+  mutate(dist_tuc = dist_tuc / 1000) %>%
+  mutate(tucson = ifelse(dist_tuc < 35, 1, 0)) %>%
+  mutate(dist_phx = geosphere::distHaversine(cbind(lon, lat),
+                                             cbind(phoenix$lon, phoenix$lat))) %>%
+  mutate(dist_phx = dist_phx / 1000) %>%
+  mutate(phoenix = ifelse(dist_phx < 50, 1, 0)) %>%
+  rename(intensity = intensity_midpoint)
+
+# Now, for each plant and year, identify the max count and then for all non-0s,
+# the date(s) that the max count was observed
+maxdates <- maxf_sag %>%
+  group_by(id, site_id, lat, lon, tucson, phoenix, yr) %>%
+  mutate(nobs = n(),
+         max = ifelse(nobs == 1, NA, max(intensity, na.rm = TRUE))) %>%
+  filter(!is.na(max) & max > 0) %>%
+  select(-nobs) %>%
+  group_by(id, site_id, lat, lon, tucson, phoenix, yr, max) %>%
+  summarize(max_first = min(doy[intensity == max]),
+            max_last = max(doy[intensity == max]),
+            max_mn = mean(doy[intensity == max]),
+            .groups = "keep") %>%
+  data.frame()
+
+# Remove observations of saguaros outside Tucson/Phoenix since they're often at
+# different elevations or in different climates
+maxdates <- maxdates %>%
+  filter(tucson == 1 | phoenix == 1)
+
+# Does it look like there's a difference between Tucson and Phoenix?
+maxdates <- maxdates %>%
+  mutate(fyr = as.factor(yr - min(yr)))
+m_first <- lm(max_first ~ tucson + fyr, data = maxdates)
+m_last <- lm(max_mn ~ tucson + fyr, data = maxdates)
+m_mn <- lm(max_last ~ tucson + fyr, data = maxdates)
+summary(m_first)$coefficients["tucson",]
+summary(m_mn)$coefficients["tucson",]
+summary(m_last)$coefficients["tucson",]
+# Tucson does look to be 4-5 days earlier
+
+# Look at distribution of dates across plants, years, location
+maxdates %>%
+  pivot_longer(cols = max_first:max_mn,
+               names_to = "metric",
+               values_to = "doy") %>%
+  ggplot() +
+    geom_histogram(aes(x = doy), bins = 50) +
+    facet_grid(metric ~.)
+# Just Tucson
+maxdates %>%
+  filter(tucson == 1) %>%
+  pivot_longer(cols = max_first:max_mn,
+               names_to = "metric",
+               values_to = "doy") %>%
+  ggplot() +
+  geom_histogram(aes(x = doy), bins = 50) +
+  facet_grid(metric ~.)
+# As expected, but will probably want to exclude some outliers from analysis
+
+# Look at distribution of mean dates for different years in Tucson
+maxdates %>%
+  filter(tucson == 1) %>%
+  filter(yr %in% 2018:2024) %>%
+  ggplot() +
+    geom_histogram(aes(x = max_mn), bins = 50) +
+    facet_grid(yr ~ .)
+# 2024 looks like it was later, otherwise not a whole lot of difference
+
+# Get phenophase status data (from Tucson area from 2012-2024)
+sag_tuc <- si %>%
+  filter(common_name == "saguaro",
+         class_id %in% flower_classes, 
+         yr %in% 2012:2024) %>%
+  rename(lat = latitude, 
+         lon = longitude,
+         elev = elevation_in_meters,
+         id = individual_id,
+         doy = day_of_year,
+         status = phenophase_status) %>%
+  mutate(dist_tuc = geosphere::distHaversine(cbind(lon, lat),
+                                             cbind(tucson$lon, tucson$lat))) %>%
+  mutate(dist_tuc = dist_tuc / 1000) %>%
+  mutate(tucson = ifelse(dist_tuc < 35, 1, 0)) %>%
+  filter(tucson == 1) %>%
+  select(site_id, id, lat, lon, phenophase_description, observation_date, yr, 
+         doy, status, intensity_value, intensity_midpoint, interval)
+
+# Add week of the year
+sag_tuc <- sag_tuc %>%
+  mutate(wk = week(observation_date)) %>%
+  filter(wk < 53)
+
+# Calculate the weekly proportion of individuals in each phenophase after
+# removing all but one observation of a plant each week
+wkprop <- sag_tuc %>%
+  mutate(php = ifelse(phenophase_description == "Open flowers", 
+                      "open", "flower")) %>%
+  arrange(id, php, yr, wk, desc(status)) %>%
+  distinct(id, php, yr, wk, .keep_all = TRUE) %>%
+  group_by(php, yr, wk) %>%
+  summarize(nobs = n(),
+            inphase = sum(status),
+            .groups = "keep") %>%
+  data.frame() %>%
+  mutate(prop = inphase / nobs) 
+
+wkprop %>%
+  group_by(yr) %>%
+  summarize(min_nobs = min(nobs),
+            mn_nobs = round(mean(nobs), 1))
+# Mean number of observations per week much greater from 2017-2024
+
+wkprop %>%
+  group_by(wk) %>%
+  summarize(min_nobs = min(nobs),
+            mn_nobs = round(mean(nobs), 1)) %>%
+  data.frame()
+# More observations per week in spring, but not a huge dropoff in winter
+
+# Exclude data before 2017, and then remove any weekly proportions that are 
+# based on < 10 individuals per week
+wkprop <- wkprop %>%
+  filter(yr >= 2017) %>%
+  filter(nobs >= 10) %>%
+  mutate(fyr = factor(yr))
+
+# Plot annual values
+ggplot(wkprop, aes(x = wk, y = prop)) +
+  geom_line(aes(color = fyr), alpha = 0.5) +
+  geom_point(aes(color = fyr, size = nobs), alpha = 0.5) +
+  facet_grid(php ~ .)
+
+# Fit GAMs for phenophase flower status each year:
+floweryr <- gam(prop ~ s(wk, by = fyr, bs = "cc", k = 20), 
+                family = "binomial",
+                weights = nobs,
+                method = "REML",
+                data = filter(wkprop, php == "flower"))
+summary(floweryr)
+gam.check(floweryr) 
+# p-values are low, but do not improve (and predictions don't meaningfully 
+# change) when k is higher
+marginaleffects::plot_predictions(floweryr, by = c("wk", "fyr", "fyr"))
+
+flowerpreds <- expand.grid(
+  wk = 1:52,
+  fyr = 2017:2024,
+  KEEP.OUT.ATTRS = FALSE
+  ) %>%
+  mutate(fyr = factor(fyr))
+predsfl <- predict(floweryr, newdata = flowerpreds, 
+                   type = "link", se.fit = TRUE)
+
+flowerpreds$est_l <- predsfl$fit
+flowerpreds$se <- predsfl$se.fit
+flowerpreds <- flowerpreds %>%
+  mutate(lwr_l = est_l - 2 * se,
+         upr_l = est_l + 2 * se) %>%
+  mutate(estimate = exp(est_l) / (1 + exp(est_l)),
+         lwr = exp(lwr_l) / (1 + exp(lwr_l)),
+         upr = exp(upr_l) / (1 + exp(upr_l)))
+
+ggplot(data = flowerpreds, aes(x = wk)) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.5) +
+  geom_line(aes(y = estimate)) +
+  facet_wrap(~fyr, scales = "fixed")
+
+# Fit GAMs for phenophase open open status each year:
+openyr <- gam(prop ~ s(wk, by = fyr, bs = "cc", k = 20), 
+                family = "binomial",
+                weights = nobs,
+                method = "REML",
+                data = filter(wkprop, php == "open"))
+summary(openyr)
+gam.check(openyr) 
+# p-values are low, but do not improve (and predictions don't meaningfully 
+# change) when k is higher
+marginaleffects::plot_predictions(openyr, by = c("wk", "fyr", "fyr"))
+
+openpreds <- expand.grid(
+  wk = 1:52,
+  fyr = 2017:2024,
+  KEEP.OUT.ATTRS = FALSE
+) %>%
+  mutate(fyr = factor(fyr))
+predsop <- predict(openyr, newdata = openpreds, 
+                   type = "link", se.fit = TRUE)
+
+openpreds$est_l <- predsop$fit
+openpreds$se <- predsop$se.fit
+openpreds <- openpreds %>%
+  mutate(lwr_l = est_l - 2 * se,
+         upr_l = est_l + 2 * se) %>%
+  mutate(estimate = exp(est_l) / (1 + exp(est_l)),
+         lwr = exp(lwr_l) / (1 + exp(lwr_l)),
+         upr = exp(upr_l) / (1 + exp(upr_l)))
+
+ggplot(data = openpreds, aes(x = wk)) +
+  geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.5) +
+  geom_line(aes(y = estimate)) +
+  facet_wrap(~fyr, scales = "fixed")
+
+# Next steps:
+# Plot flower, open flower, and max dates together (for each year)

@@ -222,8 +222,8 @@ sites <- sif %>%
 
 # Load weather data for these sites -------------------------------------------#
 # Downloaded PRISM data through web interface, so we could get data at 800m 
-# resolution without having to download daily rasters for CONUS
-# https://prism.oregonstate.edu/explorer/bulk.php
+# resolution without having to download daily rasters for CONUS, which takes a
+# long time (https://prism.oregonstate.edu/explorer/bulk.php)
 
 # Stuff commented out below was only run once, to create monthly summaries
 
@@ -306,7 +306,7 @@ spp_summary
 
 # California barrel cactus only monitored at McDowell
 count(filter(sif, common_name == "California barrel cactus"), site_id)
-# Buck-horn cholla monitored at another 2 sites
+# Buck-horn cholla monitored at another 2 sites, but most obs at McDowell
 count(filter(sif, common_name == "buck-horn cholla"), site_id)
 
 # Summarize data by intensity category ----------------------------------------#
@@ -379,14 +379,14 @@ php_summary <- pl_ph_yr %>%
 php_summary
 
 # Quite a bit more fluctuation in phenophase status than there was in other 
-# datasets (Kodiak, NEON), which likely reflects environment and how desert
-# plants respond to weather changes. It's unclear the extent to which this 
-# variation also reflects observer quality.
+# datasets (Kodiak, NEON), which is likely a function of the desert environment
+# and how plants respond to weather changes. It's unclear the extent to which 
+# this variation also reflects observer quality.
 
 # Additional data filtering ---------------------------------------------------#
 
 # Use a rule to exclude any species-phenophase combination where there's only 
-# one year of data. 
+# one year of data (if there are any)
 sif <- sif %>%
   group_by(common_name, phenophase_description) %>%
   mutate(n_yrs = n_distinct(yr)) %>%
@@ -429,6 +429,7 @@ combos <- sif_df %>%
             .groups = "keep") %>%
   data.frame()
 
+# What numeric intensity data are left?
 combos_n <- filter(combos, intensity_type == "number")
 combos_n
 # Will focus on 3 intensity categories: flowers, fruit, fruit/seed drop and
@@ -1260,7 +1261,7 @@ count(flowers, common_name, intensity_midpoint)
   # Strong, negative effect of elevation, but that could be driven by one very
   # high-elevation site that monitored 3 plants in one year
   # Strong effect of spring temperatures, but jojoba can flower almost anytime, 
-  # so in some plants those temperatures are occurring after flowering commenced.
+  # so in some plants those temperatures are occurring after flowering began.
   # Leaving jojoba for now.
   
 # -----------------------------------------------------------------------------#
@@ -1281,7 +1282,7 @@ ppy <- si %>%
             obs50 = sum(in50),
             obs80 = sum(in80),
             mean_int = round(mean(interval, na.rm = TRUE), 2),
-            max_int = ifelse(obs ==1, NA, max(interval, na.rm = TRUE)),
+            max_int = ifelse(obs == 1, NA, max(interval, na.rm = TRUE)),
             inphase = sum(phenophase_status),
             intvalue = sum(!is.na(intensity_value)),
             prop_inphase = round(inphase / obs, 2),
@@ -1299,7 +1300,7 @@ ff_ppy <- ppy %>%
     id_cols = c(common_name, individual_id, yr),
     names_from = php,
     names_glue = "{php}_{.value}",
-    values_from = c(obs, inphase, intvalue, obs50, obs80)
+    values_from = c(obs, inphase, intvalue, obs50, obs80, max_intensity)
   ) %>%
   data.frame() %>%
   # Convert any NAs to 0s for number of observations (happened when there were
@@ -1309,3 +1310,43 @@ ff_ppy <- ppy %>%
 # Identify plant-years that have a sufficient number of observations of both 
 # during appropriate periods that would make it worth evaluating correlations
 
+# Try same filters that we used for ordinal regression models? (remove 
+# plant-php-year combos when fewer than 5 observations were made between dates
+# associated with the 10th and 90th percentile AND fewer than 2 observations
+# were made between dates associated with the 25th and 75th percentiles)
+ff_ppy <- ff_ppy %>%
+  mutate(remove = ifelse(
+    fl_obs50 < 2 | fr_obs50 < 2 | fl_obs50 < 5 | fr_obs50 < 5, 1, 0
+  ))
+count(ff_ppy, remove)
+# This filter would remove 69% of plant-years...
+
+# Filter out plant-years with too few observations, AND filter out plant-years
+# where the max number of flowers is 0 but the max number of fruit is > 0 (which
+# doesn't occur that often). Note: by excluding any plant-years with 0 flowers,
+# we can get rid of those instances and also when flower and fruit = 0, which
+# we don't care about
+fff_ppy <- ff_ppy %>%
+  filter(remove == 0) %>%
+  filter(fl_max_intensity > 0) %>%
+  rename(fl_max = fl_max_intensity,
+         fr_max = fr_max_intensity)
+
+# Plot logged max intensity values (need to add a small value to fruits, that
+# can have max = 0)
+corplot <- fff_ppy %>%
+  filter(common_name != "California barrel cactus")  %>%
+  mutate(fl_max_l = log(fl_max),
+         fr_max_l = ifelse(fr_max == 0, log(fr_max + 0.1), log(fr_max))) %>%
+  ggplot(aes(x = fl_max_l, y = fr_max_l)) +
+  geom_jitter(width = 0.1, height = 0.1) +
+  geom_smooth(method = "lm", se = FALSE, formula = y ~ x) +
+  facet_wrap(~ common_name, scales = "free_x") +
+  labs(x = "log(max flowers)", y = "log(max fruit)") + 
+  ggpubr::stat_cor(method = "pearson", cor.coef.name = "r")
+# ggsave("output/flower-fruit-cor.png", corplot,
+#        height = 5, width = 6.5, units = "in")
+
+# High correlations between max number of flowers and fruit in cholla (0.71) 
+# and saguaro (0.67), less so with mesquite (0.50) and almost none with 
+# jojoba (0.19). 

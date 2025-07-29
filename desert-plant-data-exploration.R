@@ -11,6 +11,7 @@ library(brms)
 library(leaflet)
 library(geosphere)
 library(mgcv)
+library(cowplot)
 
 # Plant phenophase classes
 leaf_classes <- 1:5
@@ -1365,10 +1366,12 @@ sag_locs <- sag_locs %>%
   mutate(dist_tuc = geosphere::distHaversine(cbind(lon, lat),
                                              cbind(tucson$lon, tucson$lat))) %>%
   mutate(dist_tuc = dist_tuc / 1000) %>%
+  # 35-km buffer around central Tucson looks ok
   mutate(tucson = ifelse(dist_tuc < 35, 1, 0)) %>%
   mutate(dist_phx = geosphere::distHaversine(cbind(lon, lat),
                                              cbind(phoenix$lon, phoenix$lat))) %>%
   mutate(dist_phx = dist_phx / 1000) %>%
+  # 50-km buffer around central Phoenix?
   mutate(phoenix = ifelse(dist_phx < 50, 1, 0))
 
 # Check that geographic filters look ok
@@ -1377,7 +1380,11 @@ leaflet(sag_locs) %>% addTiles() %>%
   addCircleMarkers(~lon, ~lat, radius = ~n_plants, fillOpacity = 0.6,
                    data = filter(sag_locs, tucson == 1), color = "red") %>%
   addCircleMarkers(~lon, ~lat, radius = ~n_plants, fillOpacity = 0.6,
-                   data = filter(sag_locs, phoenix == 1), color = "red")
+                   data = filter(sag_locs, phoenix == 1), color = "red") %>%
+  addCircles(lng = tucson$lon, lat = tucson$lat, radius = 35000, 
+             color = "purple", fillOpacity = 0) %>%
+  addCircles(lng = phoenix$lon, lat = phoenix$lat, radius = 50000, 
+             color = "purple", fillOpacity = 0)
 
 # Will use flowers dataframe for max counts and will use si dataframe for
 # phenophase status because we don't want as many strict filters for that 
@@ -1431,7 +1438,7 @@ summary(m_mn)$coefficients["tucson",]
 summary(m_last)$coefficients["tucson",]
 # Tucson does look to be 4-5 days earlier
 
-# Look at distribution of dates across plants, years, location
+# Look at distribution of max count dates across plants, years, locations
 maxdates %>%
   pivot_longer(cols = max_first:max_mn,
                names_to = "metric",
@@ -1501,7 +1508,7 @@ wkprop %>%
   group_by(yr) %>%
   summarize(min_nobs = min(nobs),
             mn_nobs = round(mean(nobs), 1))
-# Mean number of observations per week much greater from 2017-2024
+# Mean number of observations per week much greater from 2017/2018-2024
 
 wkprop %>%
   group_by(wk) %>%
@@ -1510,10 +1517,10 @@ wkprop %>%
   data.frame()
 # More observations per week in spring, but not a huge dropoff in winter
 
-# Exclude data before 2017, and then remove any weekly proportions that are 
+# Exclude data before 2018, and then remove any weekly proportions that are 
 # based on < 10 individuals per week
 wkprop <- wkprop %>%
-  filter(yr >= 2017) %>%
+  filter(yr >= 2018) %>%
   filter(nobs >= 10) %>%
   mutate(fyr = factor(yr))
 
@@ -1533,11 +1540,11 @@ summary(floweryr)
 gam.check(floweryr) 
 # p-values are low, but do not improve (and predictions don't meaningfully 
 # change) when k is higher
-marginaleffects::plot_predictions(floweryr, by = c("wk", "fyr", "fyr"))
 
+# Plot predictions
 flowerpreds <- expand.grid(
   wk = 1:52,
-  fyr = 2017:2024,
+  fyr = 2018:2024,
   KEEP.OUT.ATTRS = FALSE
   ) %>%
   mutate(fyr = factor(fyr))
@@ -1568,11 +1575,11 @@ summary(openyr)
 gam.check(openyr) 
 # p-values are low, but do not improve (and predictions don't meaningfully 
 # change) when k is higher
-marginaleffects::plot_predictions(openyr, by = c("wk", "fyr", "fyr"))
 
+# Plot predictions
 openpreds <- expand.grid(
   wk = 1:52,
-  fyr = 2017:2024,
+  fyr = 2018:2024,
   KEEP.OUT.ATTRS = FALSE
 ) %>%
   mutate(fyr = factor(fyr))
@@ -1593,5 +1600,111 @@ ggplot(data = openpreds, aes(x = wk)) +
   geom_line(aes(y = estimate)) +
   facet_wrap(~fyr, scales = "fixed")
 
-# Next steps:
-# Plot flower, open flower, and max dates together (for each year)
+# Faceted plot for all years
+doy_limits <- c(40, 220)
+mdates <- maxdates %>%
+  filter(yr %in% 2018:2024) %>%
+  mutate(fyr = factor(yr))
+mdates_avg <- mdates %>%
+  group_by(fyr) %>%
+  summarize(max_mn = mean(max_mn)) %>%
+  data.frame()
+
+flowerplotdf <- flowerpreds %>%
+  mutate(beginning = ymd("2023-01-01"),
+         date = beginning + weeks(wk) - 4,
+         doy = as.numeric(format(date, "%j"))) %>%
+  mutate(type = "Flowers")
+
+openplotdf <- openpreds %>%
+  mutate(beginning = ymd("2023-01-01"),
+         date = beginning + weeks(wk) - 4,
+         doy = as.numeric(format(date, "%j"))) %>%
+  mutate(type = "Open flowers")
+
+flowersplot <- rbind(flowerplotdf, openplotdf)
+
+flowers_allyrs <- ggplot(data = flowersplot, 
+       aes(x = doy, y = estimate, ymin = lwr, ymax = upr)) +
+  geom_ribbon(aes(fill = type), alpha = 0.3) +
+  geom_line(aes(color = type)) +
+  scale_color_manual(values = c("orange", "salmon4")) +
+  scale_fill_manual(values = c("orange", "salmon4")) +
+  geom_vline(data = mdates_avg, aes(xintercept = max_mn), linetype = "dotted") +
+  geom_segment(data = mdates, aes(y = -0.01, yend = 0.01,
+                                  x = max_mn, xend = max_mn,
+                                  ymin = NULL, ymax = NULL)) +
+  scale_x_continuous(limits = doy_limits) +
+  facet_wrap(~fyr) +
+  labs(y = "Proportion of plants", x = "Day of year", 
+       color = NULL, fill = NULL) +
+  theme_bw() +
+  theme(legend.position = "bottom")
+flowers_allyrs
+
+# ggsave("output/saguaro-flower-maxdates.png",
+#        flowers_allyrs,
+#        height = 6.5,
+#        width = 6.5,
+#        units = "in")
+
+# Plot for each year
+for (year in 2018:2024) {
+
+  mdates <- maxdates %>%
+    filter(yr == year) %>%
+    mutate(idf = factor(id))
+  
+  doy_limits <- c(40, 220)
+  flowerplot <- flowerpreds %>%
+    filter(fyr == year) %>%
+    mutate(beginning = ymd("2023-01-01"),
+           date = beginning + weeks(wk) - 4,
+           doy = as.numeric(format(date, "%j"))) %>%
+    ggplot(aes(x = doy)) +
+    geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.3, fill = "orange") +
+    geom_line(aes(y = estimate), color = "orange") +
+    geom_vline(aes(xintercept = mean(mdates$max_mn)), color = "gray") +
+    geom_segment(data = mdates, aes(y = -0.01, yend = 0.01, 
+                                    x = max_mn, xend = max_mn)) +
+    scale_x_continuous(limits = doy_limits) +
+    theme_bw() +
+    labs(y = "Proportion of plants with flowers") +
+    theme(axis.title.x = element_blank())
+  openplot <- openpreds %>%
+    filter(fyr == year) %>%
+    mutate(beginning = ymd("2023-01-01"),
+           date = beginning + weeks(wk) - 4,
+           doy = as.numeric(format(date, "%j"))) %>%
+    ggplot(aes(x = doy)) +
+    geom_ribbon(aes(ymin = lwr, ymax = upr), alpha = 0.3, fill = "salmon4") +
+    geom_line(aes(y = estimate), color = "salmon4") +
+    geom_vline(aes(xintercept = mean(mdates$max_mn)), color = "gray") +
+    geom_segment(data = mdates, aes(y = -0.01, yend = 0.01, 
+                                    x = max_mn, xend = max_mn)) +
+    scale_x_continuous(limits = doy_limits) +
+    theme_bw() +
+    labs(y = "Proportion of plants with open flowers") +
+    theme(axis.title.x = element_blank())
+  mdateplot <- mdates %>%
+    ggplot(aes(y = idf, yend = idf)) +
+    geom_segment(aes(x = max_first, xend = max_last)) +
+    geom_point(aes(x = max_first)) +
+    geom_point(aes(x = max_last)) +
+    geom_point(aes(x = max_mn), shape = 3) +
+    geom_vline(aes(xintercept = mean(max_mn)), color = "gray") +
+    scale_x_continuous(limits = doy_limits) +
+    labs(x = "Day of year", y = "Dates with maximum flower counts") +
+    theme_bw() +
+    theme(axis.text.y = element_blank())
+  
+  title <- ggdraw() +
+    draw_label(paste0("Saguaro flowers, Tucson area, ", year),
+               x = 0, hjust = 0, vjust = 2)
+  print(
+    plot_grid(title, flowerplot, openplot, mdateplot, 
+              ncol = 1, align = "hv", rel_heights = c(0.1, 1, 1, 1))
+  )
+}
+
+

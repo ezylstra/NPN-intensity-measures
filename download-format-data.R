@@ -2,7 +2,7 @@
 # consistently
 
 # ER Zylstra
-# 14 July 2025
+# 29 July 2025
 
 library(dplyr)
 library(stringr)
@@ -383,3 +383,161 @@ for (i in 1:length(dspp_id)) {
   write.csv(si, new_filename, row.names = FALSE)
   
 }
+
+# Download data on NE canopy trees --------------------------------------------#
+
+# Species: American basswood, northern red oak, American beech, sugar maple,
+# red maple, and striped maple
+cspp <- npn_species() %>% data.frame()
+cspp_id <- cspp %>%
+  filter(common_name %in% c("American basswood",
+                            "northern red oak",
+                            "American beech",
+                            "sugar maple",
+                            "red maple",
+                            "striped maple")) %>%
+  pull(species_id)
+
+# For now, limiting geographic scope to an area that encompasses the southern 
+# part of the Appalachian Trail. The species were common in that area and were
+# used in Tourville et al. 2024.
+region <- data.frame(lat1 = 35, 
+                     lat2 = 38,
+                     lon1 = -84,
+                     lon2 = -76)
+
+intensity_files <- list.files(path = "npn-data",
+                              pattern = "intensity-canopy",
+                              full.names = TRUE)
+
+# Download, but only if an intensity csv doesn't exist
+for (i in 1:length(cspp_id)) {
+  
+  si_csv_name <- paste0("npn-data/si-canopy", cspp_id[i], "-",
+                        min(yrs), "-", max(yrs), ".csv")
+  intensity_file <- str_detect(intensity_files, 
+                               paste0("canopy", cspp_id[i], "-"))
+
+  if (sum(intensity_file) == 0) {
+    
+    for (yr in yrs) {
+      
+      # Download status/intensity data (one row for each observation of a plant
+      # or animal species and phenophase)
+      
+      tryCatch({
+        assign(paste0("si_", yr), 
+               npn_download_status_data(
+                 request_source = requestor,
+                 years = yr,
+                 species_ids = cspp_id[i],
+                 coords = c(region$lat1, region$lon1, region$lat2, region$lon2),
+                 climate_data = FALSE,
+                 additional_fields = c("site_name", 
+                                       "observedby_person_id",
+                                       "species_functional_type"))
+        )
+      }, 
+      error = function(e) {
+        cat("Note: No data to download for", 
+            cspp$common_name[cspp$species_id == cspp_id[i]], "in", yr, "\n")
+      })
+    }
+    
+    # Combine data for all years
+    si_files <- ls()[ls() %in% paste0("si_", yrs)]
+    si_orig <- do.call(rbind, mget(si_files))
+    
+    # Remove unnecessary fields
+    si_orig <- si_orig %>%
+      select(-c(update_datetime, kingdom, abundance_value))
+    
+    # Write to file
+    write.csv(si_orig, si_csv_name, row.names = FALSE)
+    rm(list = c("si_orig", si_files))
+    
+  }  
+}
+
+# Load status-intensity data for each species and format ----------------------#
+
+for (i in 1:length(cspp_id)) {
+  
+  si_file <- paste0("npn-data/si-canopy", cspp_id[i],  "-", 
+                    min(yrs), "-", max(yrs), ".csv")
+  
+  si <- read.csv(si_file) %>%
+    # Create yr column
+    mutate(yr = year(observation_date)) %>%
+    # Convert html coding of ">" to symbol
+    mutate(phenophase_description = str_replace_all(phenophase_description,
+                                                    "&gt;", ">")) %>%
+    # Remove whitespaces in common_name column
+    mutate(common_name = str_trim(common_name)) %>%
+    # Create phenophase_descrip that's the same as phenophase_description except 
+    # all parenthetical references to taxonomic groups or locations are removed
+    # mutate(phenophase_descrip = str_replace(phenophase_description,
+    #                                         " \\s*\\([^\\)]+\\)", "")) %>%
+    # Remove any records with unknown phenophase status
+    filter(phenophase_status != -1) 
+  
+  # Filter out phenophases or intensity categories that weren't used in 2024 
+  # or phenophases that don't have intensity categories associated with them
+  # (for now, keeping phenophases that could have intensity categories, but 
+  # observers didn't report intensity values)
+  si <- si %>%
+    filter(phenophase_id %in% ph_2024) %>%
+    filter(intensity_category_id %in% int_2024 | is.na(intensity_category_id))
+  
+  # Merge phenophase and intensity information with si 
+  si <- si %>%
+    select(-c(observation_id, observedby_person_id)) %>%
+    left_join(ph_merge, by = "phenophase_id") %>%
+    left_join(ivalues, by = c("intensity_category_id", "intensity_value"))
+  
+  # Create a new column with intensity labels (factor)
+  si <- si %>%
+    # Remove anything in parentheses in intensity name
+    mutate(intensity_label = str_replace(intensity_name, " \\s*\\([^\\)]+\\)", "")) %>%
+    # Remove the word " present" from intensity name
+    mutate(intensity_label = str_remove(intensity_label, " present")) %>%
+    # Remove the word "Potential" from intensity name
+    mutate(intensity_label = str_remove(intensity_label, "Potential ")) %>%
+    # Remove the word " percentage" from intensity name
+    mutate(intensity_label = str_remove(intensity_label, " percentage")) %>%
+    # Remove "Recent " from intensity name
+    mutate(intensity_label = str_remove(intensity_label, "Recent ")) %>%
+    # Replace " or " with "/" in intensity name
+    mutate(intensity_label = str_replace(intensity_label, " or ", "/")) %>%
+    # Add "No. " in front or "(%)" at the end
+    mutate(intensity_label = case_when(
+      intensity_type == "number" ~ paste0("No. ", str_to_lower(intensity_label)),
+      intensity_type == "percent" ~ paste0(str_to_sentence(intensity_label), " (%)"),
+      .default = intensity_label
+    )) %>%
+    arrange(class_id) %>%
+    mutate(intensity_label = factor(intensity_label, 
+                                    levels = unique(intensity_label)))
+  
+  # Just restrict data to 2015-2024, and just keep data on leaf phenophases
+  leaf_classes <- 1:5
+  si <- si %>%
+    filter(yr %in% 2015:2024) %>%
+    filter(class_id %in% leaf_classes)
+  
+  min_yr <- min(si$yr)
+  max_yr <- max(si$yr)
+  
+  # Save filtered and formatted data to file
+  new_filename <- paste0("npn-data/intensity-canopy", cspp_id[i], "-", 
+                         min_yr, "-", max_yr, ".csv")
+  write.csv(si, new_filename, row.names = FALSE)
+  
+}
+
+# Delete si files because they're huge
+si_files <- list.files(path = "npn-data",
+                       pattern = "si-canopy",
+                       full.names = TRUE)
+file.remove(si_files)
+

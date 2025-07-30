@@ -6,7 +6,7 @@ library(stringr)
 library(lubridate)
 library(tidyr)
 library(ggplot2)
-# library(brms)
+library(brms)
 library(leaflet)
 # library(geosphere)
 # library(mgcv)
@@ -115,15 +115,22 @@ si <- si %>%
 # ok and it's much easier to understand how that happens
 si <- filter(si, is.na(state) | state != "ND")
 
+# Only a few red mapl etrees east of -78 longitude, so we'll filter them out
+si <- filter(si, longitude <= (-78))
+
 # Just going to focus on canopy fullness for now, so eliminating everything else
 si <- filter(si, phenophase_description == "Leaves")
+
+# Going to focus on canopy closure in spring, so limiting observations to 
+# the first half of the year (day 182 is June 30/July 1)
+si <- filter(si, day_of_year <= 182)
 
 # Want to:
   # remove plant-year combos with no observations in phase
   # remove plant-year combos with no observations with intensity values
   # remove plant-year combos with < 5 observations
-  # remove plant-year combos when mean interval > 14 days
-  #### May want to revisit this to limit interval length during periods of transition only
+  # remove plant-year combos when max interval > 21 days
+  #### May want to revisit this interval length filter
 
 # Summarize amount and quality of information for each plant, year
 pl_yr <- si %>%
@@ -145,8 +152,8 @@ pl_yr <- pl_yr %>%
     n_inphase == 0 ~ 1,
     n_intvalue == 0 ~ 1,
     nobs < 5 ~ 1,
-    mean_int > 14 ~ 1,
-    # max_int > 14 ~ 1,
+    max_int > 21 ~ 1,
+    max_int > 30 ~ 1,
     .default = 0
   ))
 si <- si %>%
@@ -155,15 +162,56 @@ si <- si %>%
   filter(remove == 0) %>%
   select(-remove)
 
+# Looks like there might be instances where an individual tree had high canopy
+# values with a 0 value in-between. This isn't really possible, at least in such
+# a short amount of time, so we'll try to filter these data out since they're
+# likely due to observation error.
+
+# Look for patterns with consecutive intensity values >80, then <50, then
+# back up
+sif <- si %>%
+  mutate(intensity_cat = ifelse(intensity_midpoint > 80, 2,
+                                ifelse(intensity_midpoint < 50, 0, 1))) %>%
+  # Remove observations in phase with no intensity value
+  filter(!is.na(intensity_midpoint)) %>%
+  arrange(individual_id, observation_date)
+
+# Where do high-low-high patterns occur?
+pattern <- c(2, 0, 2)
+starts <- which(zoo::rollapply(sif$intensity_cat, 
+                               length(pattern), 
+                               function(x) all(x == pattern)))
+
+# Identify anomalously low observations so we can filter them out
+sif$anomalous <- 0
+sif$anomalous[starts + 1] <- 1
+
+# Filter them out
+sif <- sif %>%
+  filter(anomalous == 0) %>%
+  select(-anomalous)
+
+# What's left?
+spp_yr <- sif %>% 
+  group_by(common_name, yr) %>%
+  summarize(n_trees = n_distinct(individual_id),
+            .groups = "keep") %>%
+  data.frame()
+spp_yr
+count(spp_yr, n_trees)
+sum(spp_yr$n_trees >= 5) / nrow(spp_yr)
+# 48/53 species-years (90%) have >= 5 trees. 
+# American basswood has < 10 trees every year, only 5 years with >= 5 trees
+
 # Extract information about sites ---------------------------------------------#
 
-sites <- si %>%
+sites <- sif %>%
   distinct(latitude, longitude, site_id)
 # write.table(sites, "weather-data/canopy-plant-sites.csv", sep = ",",
 #             row.names = FALSE,
 #             col.names = FALSE)
 
-sites2 <- si %>%
+sites2 <- sif %>%
   group_by(site_id, latitude, longitude) %>%
   summarize(n_spp = n_distinct(common_name),
             n_plants = n_distinct(individual_id),
@@ -216,18 +264,15 @@ leaflet(sites2) %>% addTiles() %>%
 
 # Plot raw intensity data -----------------------------------------------------#
 
-si <- si %>%
-  mutate(intensity = intensity_midpoint / 100)
-
 # Identify the min/max number of plants per species and year to keep point size 
 # consistent among plots
-nplants_size <- si %>%
+nplants_size <- sif %>%
   group_by(intensity_label, common_name, yr) %>%
   summarize(n_plants = n_distinct(individual_id), .groups = "keep") %>%
   data.frame()
 
 # Loop through species
-spps <- unique(si$common_name)
+spps <- unique(sif$common_name)
   
 for (spp in spps) {
     
@@ -239,11 +284,7 @@ for (spp in spps) {
   # Create ggplot object and save to file (if file doesn't already exist)
   if (!file.exists(png_name)) {
     
-    si_int_spp <- filter(si, common_name == spp)
-    
-    # Remove observations where phenophase status is 1, but intensity value 
-    # wasn't provided (this creates breaks in plotted lines)
-    si_int_spp <- filter(si_int_spp, !is.na(intensity_midpoint))
+    si_int_spp <- filter(sif, common_name == spp)
 
     # Figures with lines and points, with size proportional to no. of plants 
     agg <- si_int_spp %>%
@@ -256,7 +297,7 @@ for (spp in spps) {
       geom_line(data = si_int_spp, show.legend = FALSE, alpha = 0.5,
                 aes(color = factor(individual_id))) +
       geom_point(data = agg, aes(size = n_indiv), shape = 16, alpha = 0.4) +
-      scale_size_continuous(limits = c(1, max(nplants_size$n_plants))) +
+      # scale_size_continuous(limits = c(1, max(nplants_size$n_plants))) +
       labs(title = paste0(str_to_sentence(spp), ",  Canopy fullness"),
            y = "Leaf canopy fullness (%)", x = "Day of year") +
       theme_bw()
@@ -269,22 +310,18 @@ for (spp in spps) {
            units = "in")
   }
 }
-# These are a little messier than I was hoping for. 
 
-# American beech is particularly bad. Lots of non-zero values early in the year,
-# 2021-2024 and not a clear decline at teh end of those years. Could those trees
-# hang on to their leaves?
+# American beech is an outlier, since looks like some of trees retained their
+# leaves through the winter, especially in later years.
 
-# Red maple isn't bad, but there are longer intervals for increase/descrease in
-# canopy fullness. Wondering if this is due to geographic variaion?
+# Look at:
+# Weird American beech in 2017
+# Weird red oak in 2016, 2017, 2019
+# Occasional other odd trajectories (maybe make a rule about excluding any 
+# plants that have decreasing or drop offs in intensity values? They could be 
+# real if the plant is sick or if there's some weather event, but it could
+# also be observer error)
 
-# Next steps:
-# Try to eliminate what are likely problematic data, when you have a zero value
-  # inbetween very high (often 95%) values. 
-# Create stricter filters related to interval length (some long gaps, so will
-  # need to restrict based on max interval length, at least during transition 
-  # periods)
-# Maybe restrict things geographically?
 
 
   

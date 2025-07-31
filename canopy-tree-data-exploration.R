@@ -6,7 +6,8 @@ library(stringr)
 library(lubridate)
 library(tidyr)
 library(ggplot2)
-library(brms)
+# library(brms)
+library(ordbetareg)
 library(leaflet)
 # library(geosphere)
 # library(mgcv)
@@ -212,7 +213,7 @@ sites <- sif %>%
 #             col.names = FALSE)
 
 sites2 <- sif %>%
-  group_by(site_id, latitude, longitude) %>%
+  group_by(site_id, site_name, latitude, longitude) %>%
   summarize(n_spp = n_distinct(common_name),
             n_plants = n_distinct(individual_id),
             basswood = ifelse("American basswood" %in% common_name, 1, 0),
@@ -261,6 +262,15 @@ leaflet(sites2) %>% addTiles() %>%
                                      "Striped maple",
                                      "Sugar maple"),
                    options = layersControlOptions(collapse = FALSE))
+
+sites2 %>% arrange(desc(n_plants))
+# Two NEON sites have way more plants (oak, red maple, striped maple) than 
+# any other sites (Great Smoky Mtns NP; Mountain Lake Biol Station):
+# GRSM_068.phenology.phe - primary
+# MLBS_077.phenology.phe - primary
+sites2 %>% filter(grepl(".phenology.", site_name))
+# Also one NEON phenocam site:
+# GRSM_067.phenology.phe - phenocam
 
 # Plot raw intensity data -----------------------------------------------------#
 
@@ -322,6 +332,49 @@ for (spp in spps) {
 # real if the plant is sick or if there's some weather event, but it could
 # also be observer error)
 
+# Look at some anomalies:
+sif %>%
+  filter(common_name == "northern red oak",
+         yr == 2016) %>%
+  ggplot(aes(x = day_of_year, y = intensity_midpoint)) +
+    geom_line() +
+    facet_wrap(~ individual_id) +
+    labs(x = "Day of year", y = "Canopy fullness (%)",
+         title = "Red oak, 2016")
+# Several declining trajectories (29929, 45483, 49999, 50001, 103295)
+
+sif %>%
+  filter(common_name == "northern red oak",
+         yr == 2017) %>%
+  ggplot(aes(x = day_of_year, y = intensity_midpoint)) +
+  geom_line() +
+  facet_wrap(~ individual_id) +
+  labs(x = "Day of year", y = "Canopy fullness (%)",
+       title = "Red oak, 2017")
+# Bunch that bounce between very low and very high (23062, 23067, 29929, 45483)
+
+sif %>%
+  filter(common_name == "northern red oak",
+         yr == 2019) %>%
+  ggplot(aes(x = day_of_year, y = intensity_midpoint)) +
+  geom_line() +
+  facet_wrap(~ individual_id) +
+  labs(x = "Day of year", y = "Canopy fullness (%)",
+       title = "Red oak, 2019")
+# Couple that bounce between very low and very high (23062, 166287)
+# One that only has observations over short period with highest value
 
 
-  
+# Test run with red maple in 2017
+rema17 <- sif %>%
+  filter(common_name == "red maple",
+         yr == 2017)
+
+m_rema1 <- ordbetareg(intensity_midpoint ~ day_of_year + (1|individual_id),
+                      data = rema17, 
+                      true_bounds = c(0, 95),
+                      cores = 3, chains = 3)
+# This is going super slow....
+summary(m_rema1)
+plot(m_rema1) # low ESS for RE sd
+conditional_effects(m_rema1) # day_of_year (not accounting for REs I'm sure)

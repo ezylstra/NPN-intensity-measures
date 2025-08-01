@@ -1,17 +1,13 @@
 # Exploring intensity data for canopy trees in southern Appalachian Trail area
 # ER Zylstra
 
-library(dplyr)
-library(stringr)
-library(lubridate)
-library(tidyr)
-library(ggplot2)
-# library(brms)
-library(ordbetareg)
+library(tidyverse)
 library(leaflet)
-# library(geosphere)
-# library(mgcv)
-# library(cowplot)
+library(ordbetareg)   # Loads brms 
+library(tidybayes)    # Manipulate Stan objects in a tidy way
+library(broom)        # Convert model objects to data frames
+library(broom.mixed)  # Convert brms model objects to data frames
+library(emmeans)      # Calculate marginal effects in even fancier ways
 
 
 # Load and format status-intensity data ---------------------------------------#
@@ -154,7 +150,7 @@ pl_yr <- pl_yr %>%
     n_intvalue == 0 ~ 1,
     nobs < 5 ~ 1,
     max_int > 21 ~ 1,
-    max_int > 30 ~ 1,
+    # max_int > 30 ~ 1,
     .default = 0
   ))
 si <- si %>%
@@ -263,7 +259,7 @@ leaflet(sites2) %>% addTiles() %>%
                                      "Sugar maple"),
                    options = layersControlOptions(collapse = FALSE))
 
-sites2 %>% arrange(desc(n_plants))
+sites2 %>% arrange(desc(n_plants)) %>% head(20)
 # Two NEON sites have way more plants (oak, red maple, striped maple) than 
 # any other sites (Great Smoky Mtns NP; Mountain Lake Biol Station):
 # GRSM_068.phenology.phe - primary
@@ -373,8 +369,71 @@ rema17 <- sif %>%
 m_rema1 <- ordbetareg(intensity_midpoint ~ day_of_year + (1|individual_id),
                       data = rema17, 
                       true_bounds = c(0, 95),
-                      cores = 3, chains = 3)
-# This is going super slow....
+                      # control = list(adapt_delta = 0.9),
+                      cores = 4, chains = 4,
+                      backend = "cmdstanr")
 summary(m_rema1)
-plot(m_rema1) # low ESS for RE sd
-conditional_effects(m_rema1) # day_of_year (not accounting for REs I'm sure)
+plot(m_rema1) # posterior distributions and trace plots
+
+# For a good explanation of the different predictions types (grand mean,
+# marginal effects), see:
+# https://www.andrewheiss.com/blog/2021/11/10/ame-bayes-re-guide/
+
+# Expected canopy fullness by date, ignoring individual effects (ie, grand mean)
+doy_gm <- m_rema1 %>%
+  epred_draws(newdata = data.frame(day_of_year = seq(0, 180, by = 5)),
+              re_formula = NA)
+# This creates a large tibble, with nrows = unique(doy) * no. post samples
+plot_doy_gm <- ggplot(filter(doy_gm, day_of_year %in% 75:150), 
+                      aes(x = day_of_year, y = .epred)) +
+  stat_lineribbon() +
+  scale_fill_brewer(palette = "Blues") +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)",
+       fill = "Credible interval", title = "Ignore individual effects") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_gm
+
+# Conditional effects for a new, typical individual (new individual is based on
+# variation among existing individuals)
+doy_typicalplant <- m_rema1 %>%
+  epred_draws(newdata = data.frame(day_of_year = seq(0, 180, by = 5),
+                                   individual_id = "new plant"),
+              re_formula = NULL,
+              allow_new_levels = TRUE,
+              sample_new_levels = "uncertainty")
+plot_doy_typicalplant <- ggplot(filter(doy_typicalplant, day_of_year %in% 25:180), 
+                                aes(x = day_of_year, y = .epred)) +
+  stat_lineribbon() +
+  scale_fill_brewer(palette = "Blues") +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)",
+       fill = "Credible interval", title = "New, typical plant") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_typicalplant
+
+# Conditional effects for a brand new individual (new individual is based on
+# random draws from model)
+doy_newplant <- m_rema1 %>%
+  epred_draws(newdata = data.frame(day_of_year = seq(0, 180, by = 5),
+                                   individual_id = "new plant"),
+              re_formula = NULL,
+              allow_new_levels = TRUE,
+              sample_new_levels = "gaussian")
+plot_doy_newplant <- ggplot(filter(doy_newplant, day_of_year %in% 25:180), 
+                                aes(x = day_of_year, y = .epred)) +
+  stat_lineribbon() +
+  scale_fill_brewer(palette = "Blues") +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)",
+       fill = "Credible interval", title = "Brand new plant") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_newplant
+
+# Now, what if I want to predict when canopy fullness reaches 50% (and have 
+# a decent measure of uncertainty around that prediction)? It's tricky because
+# it's the inverse of normal: for a given Y, what is the value of X?
+# Can I treat this as a missing predictor value in the Stan environment? 
+# Could I get a estimated value (or really, set of posterior draws) for each 
+# plant and then summarize across them?
+

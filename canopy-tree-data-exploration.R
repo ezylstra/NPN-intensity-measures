@@ -468,7 +468,75 @@ intercepts <- as.vector(samples$individual_id[,,1])
 slopes <- as.vector(samples$individual_id[,,2])
 x_50_pRE = (qlogis(prop50) - intercepts) / slopes
 summary(x_50_pRE)
-quantile(x_50_pRE, probs = c(0.025, 0.975))
+quantile(x_50_pRE, probs = c(0.025, 0.50, 0.975))
 
 
+# Look at variation among plants in/out of NEON sites -------------------------#
+# Still working with red maple 2017 data
+
+# First, identify NEON sites:
+rema17 <- rema17 %>%
+  mutate(neon = ifelse(grepl(".phenology.", site_name), 1, 0))
+rema17 %>%
+  distinct(individual_id, site_name, neon) %>%
+  count(neon, site_name)
+# NEON site has 30 plants
+# GRSM-Tremont-Lumber Ridge has 14 plants
+# All other sites have <= 3 plants
+
+rema17 <- rema17 %>%
+  mutate(group3 = case_when(
+    grepl(".phenology.", site_name) ~ "neon",
+    grepl("Lumber Ridge", site_name) ~ "lumber",
+    .default = "other"
+  ))
+
+# Summarize how much of the data come from NEON sites
+rema17 %>%
+  group_by(group3) %>%
+  summarize(n_sites = n_distinct(site_name),
+            n_plants = n_distinct(individual_id),
+            n_obs = n()) %>%
+  data.frame()
+
+# Where is the NEON site relative to the others?
+rema17sites <- rema17 %>%
+  distinct(site_name, latitude, longitude, group3)
+leaflet(filter(rema17sites, group3 == "other")) %>% 
+  addTiles() %>%
+  addCircleMarkers(lng = ~longitude, 
+                   lat = ~latitude, 
+                   fillColor = "yellow", 
+                   fillOpacity = 1,
+                   radius = 5,
+                   color = NA) %>%
+  addCircleMarkers(data = filter(rema17sites, group3 == "neon"),
+                   lng = ~longitude, 
+                   lat = ~latitude, 
+                   fillColor = "red", 
+                   fillOpacity = 1,
+                   radius = 5,
+                   color = NA) %>%
+  addCircleMarkers(data = filter(rema17sites, group3 == "lumber"),
+                   lng = ~longitude, 
+                   lat = ~latitude, 
+                   fillColor = "purple", 
+                   fillOpacity = 1,
+                   radius = 5,
+                   color = NA)
+# NEON and Lumber Ridge in GSMNP, with other sites. Remaining sites to the east
+
+# Plot raw data
+ggplot(data = rema17, aes(x = day_of_year, y = intensity_midpoint)) +
+  geom_line(aes(color = factor(individual_id))) +
+  facet_grid(group3 ~ .) +
+  theme_bw() +
+  theme(legend.position = "none")
+ggplot(data = filter(rema17, neon == 1),
+       aes(x = day_of_year, y = intensity_midpoint)) +
+  geom_line() +
+  facet_wrap(~factor(individual_id))
+# With just one year of data, it doesn't necessarily look like more sites 
+# means more variation. Decent amount of variation in timing among plants 
+# within NEON and Lumber Ridge sites. 
 

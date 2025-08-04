@@ -9,7 +9,6 @@ library(broom)        # Convert model objects to data frames
 library(broom.mixed)  # Convert brms model objects to data frames
 library(emmeans)      # Calculate marginal effects in even fancier ways
 
-
 # Load and format status-intensity data ---------------------------------------#
 
 # List files with formatted intensity data
@@ -360,15 +359,21 @@ sif %>%
 # Couple that bounce between very low and very high (23062, 166287)
 # One that only has observations over short period with highest value
 
+# Create model for one year and make (inverse) predictions --------------------#
 
-# Test run with red maple in 2017
+# Red maple in 2017
 rema17 <- sif %>%
   filter(common_name == "red maple",
          yr == 2017)
+# Convert 0-95 percentages to 0-1 proportions
+rema17 <- rema17 %>%
+  mutate(prop = intensity_midpoint / 95)
+# For prediction later, want to know what proportion = 50% intensity value
+prop50 <- 50/95
 
-m_rema1 <- ordbetareg(intensity_midpoint ~ day_of_year + (1|individual_id),
+m_rema1 <- ordbetareg(prop ~ day_of_year + (1|individual_id),
                       data = rema17, 
-                      true_bounds = c(0, 95),
+                      # true_bounds = c(0, 95),
                       # control = list(adapt_delta = 0.9),
                       cores = 4, chains = 4,
                       backend = "cmdstanr")
@@ -384,12 +389,12 @@ doy_gm <- m_rema1 %>%
   epred_draws(newdata = data.frame(day_of_year = seq(0, 180, by = 5)),
               re_formula = NA)
 # This creates a large tibble, with nrows = unique(doy) * no. post samples
-plot_doy_gm <- ggplot(filter(doy_gm, day_of_year %in% 75:150), 
+plot_doy_gm <- ggplot(filter(doy_gm, day_of_year %in% 25:180), 
                       aes(x = day_of_year, y = .epred)) +
   stat_lineribbon() +
   scale_fill_brewer(palette = "Blues") +
   labs(x = "Day of year", y = "Predicted canopy fullness (%)",
-       fill = "Credible interval", title = "Ignore individual effects") +
+       fill = "Credible interval", title = "Ignoring individual effects") +
   theme_bw() +
   theme(legend.position = "bottom")
 plot_doy_gm
@@ -430,10 +435,40 @@ plot_doy_newplant <- ggplot(filter(doy_newplant, day_of_year %in% 25:180),
   theme(legend.position = "bottom")
 plot_doy_newplant
 
-# Now, what if I want to predict when canopy fullness reaches 50% (and have 
-# a decent measure of uncertainty around that prediction)? It's tricky because
-# it's the inverse of normal: for a given Y, what is the value of X?
-# Can I treat this as a missing predictor value in the Stan environment? 
-# Could I get a estimated value (or really, set of posterior draws) for each 
-# plant and then summarize across them?
+
+# Inverse prediction: what day of year will predicted canopy fullness be 50%?
+# See: https://discourse.mc-stan.org/t/inverse-predictions-from-posterior/35350
+
+# Without taking random effects into account:
+d <- as_draws_rvars(m_rema1)
+d # Note that this will hang for a while to summarize random intercepts
+  # Don't need to wait though - can just grab parameter names
+
+intercept_p <- d$`b_Intercept`
+slope_p <- d$`b_day_of_year`
+
+x_50_p = (qlogis(prop50) - intercept_p) / slope_p
+str(posterior::draws_of(x_50_p))
+posterior::summarize_draws(x_50_p)
+quantile(posterior::draws_of(x_50_p)[, 1], probs = c(0.025, 0.975))
+
+# But what if we do want to take random effects into account?
+# Need to add gaussian noise by sampling from normal(0, sd(indidividual_id))
+samples <- coef(m_rema1, summary = FALSE) 
+# This is a list of 1 array (name = individual_id). 
+# Dims of array: rows = iter (4000); cols = individual (83); slice = param (2 [int, doy])
+
+oint <- rowMeans(samples$individual_id[,,1])
+# Summarizing the mean intercept across individuals for each iteration
+# gets you very close to summary of Intercept in summary(m_rema1)
+
+# So to take variation across individuals into account, use matrix of intercept
+# values instead of mean across individuals
+intercepts <- as.vector(samples$individual_id[,,1])
+slopes <- as.vector(samples$individual_id[,,2])
+x_50_pRE = (qlogis(prop50) - intercepts) / slopes
+summary(x_50_pRE)
+quantile(x_50_pRE, probs = c(0.025, 0.975))
+
+
 

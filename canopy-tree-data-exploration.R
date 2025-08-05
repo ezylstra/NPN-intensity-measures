@@ -371,21 +371,21 @@ rema17 <- rema17 %>%
 # For prediction later, want to know what proportion = 50% intensity value
 prop50 <- 50/95
 
-m_rema1 <- ordbetareg(prop ~ day_of_year + (1|individual_id),
+m_rema17 <- ordbetareg(prop ~ day_of_year + (1|individual_id),
                       data = rema17, 
                       # true_bounds = c(0, 95),
                       # control = list(adapt_delta = 0.9),
                       cores = 4, chains = 4,
                       backend = "cmdstanr")
-summary(m_rema1)
-plot(m_rema1) # posterior distributions and trace plots
+summary(m_rema17)
+plot(m_rema17) # posterior distributions and trace plots
 
 # For a good explanation of the different predictions types (grand mean,
 # marginal effects), see:
 # https://www.andrewheiss.com/blog/2021/11/10/ame-bayes-re-guide/
 
 # Expected canopy fullness by date, ignoring individual effects (ie, grand mean)
-doy_gm <- m_rema1 %>%
+doy_gm <- m_rema17 %>%
   epred_draws(newdata = data.frame(day_of_year = seq(0, 180, by = 5)),
               re_formula = NA)
 # This creates a large tibble, with nrows = unique(doy) * no. post samples
@@ -401,7 +401,7 @@ plot_doy_gm
 
 # Conditional effects for a new, typical individual (new individual is based on
 # variation among existing individuals)
-doy_typicalplant <- m_rema1 %>%
+doy_typicalplant <- m_rema17 %>%
   epred_draws(newdata = data.frame(day_of_year = seq(0, 180, by = 5),
                                    individual_id = "new plant"),
               re_formula = NULL,
@@ -419,7 +419,7 @@ plot_doy_typicalplant
 
 # Conditional effects for a brand new individual (new individual is based on
 # random draws from model)
-doy_newplant <- m_rema1 %>%
+doy_newplant <- m_rema17 %>%
   epred_draws(newdata = data.frame(day_of_year = seq(0, 180, by = 5),
                                    individual_id = "new plant"),
               re_formula = NULL,
@@ -440,9 +440,10 @@ plot_doy_newplant
 # See: https://discourse.mc-stan.org/t/inverse-predictions-from-posterior/35350
 
 # Without taking random effects into account:
-d <- as_draws_rvars(m_rema1)
-d # Note that this will hang for a while to summarize random intercepts
-  # Don't need to wait though - can just grab parameter names
+d <- as_draws_rvars(m_rema17)
+# d 
+# Note that this will hang for a while to summarize random intercepts
+# Don't need to wait though - can just grab parameter names
 
 intercept_p <- d$`b_Intercept`
 slope_p <- d$`b_day_of_year`
@@ -450,17 +451,17 @@ slope_p <- d$`b_day_of_year`
 x_50_p = (qlogis(prop50) - intercept_p) / slope_p
 str(posterior::draws_of(x_50_p))
 posterior::summarize_draws(x_50_p)
-quantile(posterior::draws_of(x_50_p)[, 1], probs = c(0.025, 0.975))
+quantile(posterior::draws_of(x_50_p)[, 1], probs = c(0.025, 0.5, 0.975))
 
 # But what if we do want to take random effects into account?
 # Need to add gaussian noise by sampling from normal(0, sd(indidividual_id))
-samples <- coef(m_rema1, summary = FALSE) 
+samples <- coef(m_rema17, summary = FALSE) 
 # This is a list of 1 array (name = individual_id). 
 # Dims of array: rows = iter (4000); cols = individual (83); slice = param (2 [int, doy])
 
 oint <- rowMeans(samples$individual_id[,,1])
 # Summarizing the mean intercept across individuals for each iteration
-# gets you very close to summary of Intercept in summary(m_rema1)
+# gets you very close to summary of Intercept in summary(m_rema17)
 
 # So to take variation across individuals into account, use matrix of intercept
 # values instead of mean across individuals
@@ -532,11 +533,94 @@ ggplot(data = rema17, aes(x = day_of_year, y = intensity_midpoint)) +
   facet_grid(group3 ~ .) +
   theme_bw() +
   theme(legend.position = "none")
+# With just one year of data, it doesn't necessarily look like more sites 
+# means more variation. Decent amount of variation in timing among plants 
+# within NEON and Lumber Ridge sites. 
 ggplot(data = filter(rema17, neon == 1),
        aes(x = day_of_year, y = intensity_midpoint)) +
   geom_line() +
   facet_wrap(~factor(individual_id))
-# With just one year of data, it doesn't necessarily look like more sites 
-# means more variation. Decent amount of variation in timing among plants 
-# within NEON and Lumber Ridge sites. 
+# Is there something weird going on with the data around day 115? Drop in 
+# canopy fullness for many trees. Did some event happen?
+rema17 %>%
+  group_by(observation_date) %>%
+  summarize(nobs = n(),
+            fullness = round(mean(intensity_midpoint))) %>%
+  data.frame()
+# April 24-25
 
+# Multiple-year model ---------------------------------------------------------#
+# Starting with red maples
+rema <- sif %>%
+  filter(common_name == "red maple")
+
+# How are the data distributed across years, sites, individuals?
+rema %>%
+  group_by(yr) %>%
+  summarize(nsites = n_distinct(site_name),
+            nplants = n_distinct(individual_id),
+            nobs = n()) %>%
+  data.frame()
+# Way less data in 2020
+
+rema %>%
+  group_by(site_name) %>%
+  summarize(nyrs = n_distinct(yr),
+            first_yr = min(yr),
+            last_yr = max(yr),
+            yr2020 = ifelse(2020 %in% yr, 1, 0),
+            nplants = n_distinct(individual_id),
+            nobs = n()) %>%
+  arrange(desc(nplants), desc(nyrs), desc(nobs)) %>%
+  data.frame()
+# Two NEON sites have 30+ plants; Lumber Ridge has 14 plants
+# All other sites have 10 or fewer plants
+
+# Convert 0-95 percentages to 0-1 proportions
+rema <- rema %>%
+  mutate(prop = intensity_midpoint / 95)
+# For prediction later, want to know what proportion = 50% intensity value
+prop50 <- 50/95
+
+# Create year factor (after removing 2020)
+rema <- rema %>%
+  filter(yr != 2020) %>%
+  mutate(fyr = factor(yr))
+
+# Model with year as fixed effect:
+m_rema <- ordbetareg(prop ~ day_of_year * fyr + (1|individual_id),
+                     data = rema, 
+                     # control = list(adapt_delta = 0.9),
+                     cores = 4, chains = 4,
+                     backend = "cmdstanr")
+# Took about an hour!
+summary(m_rema)
+
+# Expected canopy fullness by date, ignoring individual effects (ie, grand mean)
+doy_yr_gm <- m_rema %>%
+  epred_draws(newdata = expand.grid(day_of_year = seq(0, 180, by = 5),
+                                    fyr = unique(rema$fyr),
+                                    KEEP.OUT.ATTRS = FALSE),
+              re_formula = NA)
+# This creates a large tibble, with nrows = unique(doy) * unique(yr) * no. post samples
+plot_doy_gm <- ggplot(filter(doy_yr_gm, day_of_year %in% 100:125, 
+                             fyr %in% c("2016", "2017", "2018", "2019")), 
+                      aes(x = day_of_year, y = .epred)) +
+  stat_lineribbon(aes(color = fyr, fill = fyr), alpha = 1, .width = 0) +
+  # facet_wrap(~ fyr) +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)", color = "Year",
+       fill = "Year",
+       title = "Ignoring individual effects") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_gm
+# It didn't look like things were matching up very well with the raw data plots.
+# For example, this shows 2023 values increased earlier than in other years, 
+# but looking closely at the raw plots, I'm wondering whether that's a function
+# of a weird trajectory that was at 95% and help steady from very early in the
+# year. So maybe the estimates are okay, but demostrate the need for more careful
+# cleaning/filtering?
+
+# Saving model object (actually entire workspace) for further exploration adn
+# comparison:
+# save.image("output/rema-multiyear-model.RData")

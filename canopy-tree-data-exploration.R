@@ -796,6 +796,24 @@ m_grsm21_rs3 <- ordbetareg(prop ~ day_of_year + (1 + day_of_year|spp) + (1|id),
                            cores = 4, chains = 4,
                            control = list(adapt_delta = 0.99))
 
+# Expected canopy fullness for each species, ignoring individual REs
+doy_rs3_spp <- m_grsm21_rs3 %>%
+  epred_draws(newdata = expand_grid(day_of_year = seq(0, 180, by = 5),
+                                    spp = levels(grsm21$spp)),
+              re_formula = ~ (1 + day_of_year | spp))
+plot_doy_rs3_spp <- ggplot(filter(doy_rs3_spp, day_of_year %in% 25:180), 
+                           aes(x = day_of_year, y = .epred)) +
+  stat_lineribbon(aes(color = spp, fill = after_scale(alpha(color, 0.2))), 
+                  .width = 0.80) +
+  # stat_lineribbon() +
+  # scale_fill_brewer(palette = "Blues") +
+  # facet_wrap(~ spp) +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)", color = "Species",
+       fill = "Species", title = "By species, correlated intercepts/slopes") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_rs3_spp
+
 # Multiple species and years? -------------------------------------------------#
 # Not sure this is worth running given that we'd have to keep model complexity
 # in check and thus, restrict how year might affect trajectories. 
@@ -814,4 +832,87 @@ m_grsm3yr_rs <- ordbetareg(prop ~ day_of_year + fyr + (1 + day_of_year|spp) + (1
                            control = list(adapt_delta = 0.99))
 
 # save.image("output/grsm-multispp-models.RData")
-#
+summary(m_grsm3yr_rs)
+
+# Expected canopy fullness for each species, ignoring individual REs
+doy_3yr_spp <- m_grsm3yr_rs %>%
+  epred_draws(newdata = expand_grid(day_of_year = seq(0, 180, by = 5),
+                                    fyr = levels(grsm3yr$fyr),
+                                    spp = levels(grsm3yr$spp)),
+              re_formula = ~ (1 + day_of_year | spp))
+plot_doy_3yr_spp <- ggplot(filter(doy_3yr_spp, day_of_year %in% 75:175), 
+                           aes(x = day_of_year, y = .epred)) +
+  stat_lineribbon(aes(color = spp, fill = after_scale(alpha(color, 0.2))), 
+                  .width = 0.80) +
+  facet_grid(fyr ~ .) +
+  geom_hline(yintercept = 0.50, linetype = "dashed") +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)", color = "Species",
+       fill = "Species", title = "By species, correlated intercepts/slopes") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_3yr_spp
+# Results ok -- clear that canopy filled slightly later in 2022 and much 
+# earlier in 2023. However, I think the model structure may not be flexible 
+# enough since differences among species in 2021 are not the same as they were 
+# in the 2021 model. My guess is that they're constrained to be similar in all 
+# years and so they may not be great for a single year. Could allow random 
+# species-level effects for year, but a better choice might be using weather 
+# variables instead of year.
+
+# Formatting weather data -----------------------------------------------------#
+
+# Stuff commented out below was only run once, to create monthly summaries
+prism_folder <- "weather-data/canopy-plant-prism/"
+
+# Daily data
+prism_files <- list.files(prism_folder,
+                          full.names = TRUE,
+                          pattern = "stable")
+for (i in 1:length(prism_files)) {
+  prism1 <- read.csv(prism_files[i],
+                     header = FALSE,
+                     skip = 11,
+                     col.names = c("site_id", "lon", "lat", "elev",
+                                   "date", "ppt", "tmin", "tmean", "tmax"))
+  if (i == 1) {
+    weather <- prism1
+  } else {
+    weather <- rbind(weather, prism1)
+  }
+}
+rm(prism1)
+
+# Calculate daily GDD values, with base temp of 0 deg C (gdd = tmean - base)
+base <- 0
+weather <- weather %>%
+  mutate(gdd = ifelse(tmean < base, 0, tmean - base)) %>%
+  mutate(yr = year(date),
+         doy = yday(date)) %>%
+  filter(doy <= 200) %>%
+  arrange(site_id, date)
+
+# Calculated AGDD values
+weather <- weather %>%
+  group_by(site_id, yr) %>%
+  mutate(agdd = cumsum(gdd)) %>%
+  ungroup() %>%
+  data.frame()
+
+# GDD models for red maple ----------------------------------------------------#
+
+# Attach AGDD values to red maple data (2016-2019, 2021-2024; all sites)
+agdds <- weather %>%
+  select(site_id, date, agdd) %>%
+  rename(observation_date = date)
+  
+rema <- rema %>%
+  left_join(agdds, by = c("site_id", "observation_date"))
+
+# Model with GDD instead of doy and year
+m_rema_gdd <- ordbetareg(prop ~ agdd + (1|individual_id),
+                         data = rema, 
+                         control = list(adapt_delta = 0.99),
+                         iter = 4000, cores = 4, chains = 4)
+# 
+summary(m_rema)
+

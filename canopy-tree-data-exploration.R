@@ -471,7 +471,6 @@ x_50_pRE = (qlogis(prop50) - intercepts) / slopes
 summary(x_50_pRE)
 quantile(x_50_pRE, probs = c(0.025, 0.50, 0.975))
 
-
 # Look at variation among plants in/out of NEON sites -------------------------#
 # Still working with red maple 2017 data
 
@@ -624,3 +623,195 @@ plot_doy_gm
 # Saving model object (actually entire workspace) for further exploration adn
 # comparison:
 # save.image("output/rema-multiyear-model.RData")
+
+# Multiple species models -----------------------------------------------------#
+
+# Find sites in GRSM
+sites2 <- sites2 %>%
+  mutate(grsm = ifelse(grepl("GRSM", site_name), 1, 0))
+# Check that this designation is correct:
+leaflet(sites2) %>% addTiles() %>%
+  addCircles(lng = ~longitude, lat = ~latitude, 
+             data = filter(sites2, grsm == 0), 
+             group = "Other",
+             color = "red", fillOpacity = 1, weight = 10) %>%
+  addCircles(lng = ~longitude, lat = ~latitude, 
+             data = filter(sites2, grsm == 1), 
+             group = "GRSM",
+             color = "black", fillOpacity = 1, weight = 10) %>%
+  addLayersControl(overlayGroups = c("GRSM", "Other"),
+                   options = layersControlOptions(collapse = FALSE))
+
+grsm <- sif %>%
+  filter(grepl("GRSM", site_name))
+grsm %>% 
+  group_by(yr) %>%
+  summarize(nsites = n_distinct(site_name),
+            nspp = n_distinct(common_name),
+            nplants = n_distinct(individual_id),
+            nobs = n()) %>%
+  data.frame()
+# 2020 has much less data (and only 4 species)
+# 2021 seems like decent starting year?
+grsm %>% 
+  group_by(common_name) %>%
+  summarize(nsites = n_distinct(site_name),
+            nplants = n_distinct(individual_id),
+            nyrs = n_distinct(yr),
+            nobs = n()) %>%
+  data.frame()
+# Red maple most common, but most species represented decently well.
+
+# Try one year to start:
+grsm21 <- grsm %>%
+  filter(yr == 2021) %>%
+  mutate(spp = factor(common_name),
+         id = factor(individual_id),
+         prop = intensity_midpoint / 95) 
+grsm21 %>%
+  group_by(common_name) %>%
+  summarize(nplants = n_distinct(id),
+            nsites = n_distinct(site_name))
+# Only 5 sugar maple and 6 basswood trees, so definitely should treat species
+# as random effect
+
+m_grsm21 <- ordbetareg(prop ~ day_of_year + (1|spp/id) ,
+                       data = grsm21, 
+                       cores = 4, chains = 4)
+# Took 20 min to run. ESS for individual RE = 391 and warnings about 
+# 8 divergent transitions, so probably should increase adapt_delta and maybe
+# number of samples
+summary(m_grsm21)
+
+# Expected canopy fullness by date, ignoring random effects
+doy_gm <- m_grsm21 %>%
+  epred_draws(newdata = data.frame(day_of_year = seq(0, 180, by = 5)),
+              re_formula = NA)
+# This creates a large tibble, with nrows = unique(doy) * no. post samples
+plot_doy_gm <- ggplot(filter(doy_gm, day_of_year %in% 25:180), 
+                      aes(x = day_of_year, y = .epred)) +
+  stat_lineribbon() +
+  scale_fill_brewer(palette = "Blues") +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)",
+       fill = "Credible interval", title = "Ignoring individual effects") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_gm
+
+# Expected canopy fullness for each species, ignoring individual REs
+doy_spp <- m_grsm21 %>%
+  epred_draws(newdata = expand_grid(day_of_year = seq(0, 180, by = 5),
+                                    spp = levels(grsm21$spp)),
+              re_formula = ~ (1 | spp))
+plot_doy_spp <- ggplot(filter(doy_spp, day_of_year %in% 25:180), 
+                              aes(x = day_of_year, y = .epred)) +
+  # stat_lineribbon(aes(color = spp, fill = spp), alpha = 0.6, .width = 0.95) +
+  stat_lineribbon() +
+  scale_fill_brewer(palette = "Blues") +
+  facet_wrap(~ spp) +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)",
+       fill = "Credible interval", title = "By species") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_spp
+# Uncertainty varies as expected (lots of data, little uncertainty)
+# But clear that we need to have random slopes for each species!
+
+# Model with random slopes by species, random intercepts for species and tree
+m_grsm21_rs <- ordbetareg(prop ~ day_of_year + (0 + day_of_year|spp) + (1|spp/id) ,
+                          data = grsm21, 
+                          iter = 1000,
+                          cores = 4, chains = 4,
+                          control = list(adapt_delta = 0.9))
+# Took 35 min to run, but with higher delta and 1000 iterations. 
+# ESS low for several parameters and warnings about 4 divergent transitions
+summary(m_grsm21_rs)
+
+# Species-level estimates from uncorrelated random slopes model
+coef(m_grsm21_rs, summary = TRUE) 
+# Is this specified correctly? It seems weird that day_of_year effects are 
+# identical for each individual, but things look ok at the species level, so
+# maybe it makes sense. Note that this model assumes no correlation between
+# species-level intercepts and slopes, while the one below allows for correlations
+
+# Trying again...
+m_grsm21_rs2 <- ordbetareg(prop ~ day_of_year + (1 + day_of_year|spp) + (1|id),
+                           data = grsm21, 
+                           iter = 2000,
+                           cores = 4, chains = 4,
+                           control = list(adapt_delta = 0.9))
+# Took 26 min to run. 
+# ESS low for several parameters and warnings about 43 divergent transitions
+summary(m_grsm21_rs2)
+coef(m_grsm21_rs2)
+
+# Look at predictions for both models.
+# Expected canopy fullness for each species, ignoring individual REs
+doy_rs_spp <- m_grsm21_rs %>%
+  epred_draws(newdata = expand_grid(day_of_year = seq(0, 180, by = 5),
+                                    spp = levels(grsm21$spp)),
+              re_formula = ~ (0 + day_of_year | spp) + (1 | spp))
+plot_doy_rs_spp <- ggplot(filter(doy_rs_spp, day_of_year %in% 25:180), 
+                          aes(x = day_of_year, y = .epred)) +
+  stat_lineribbon(aes(color = spp, fill = after_scale(alpha(color, 0.2))), 
+                  .width = 0.80) +
+  # stat_lineribbon() +
+  # scale_fill_brewer(palette = "Blues") +
+  # facet_wrap(~ spp) +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)", color = "Species",
+       fill = "Species", title = "By species") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_rs_spp
+
+# Expected canopy fullness for each species, ignoring individual REs
+doy_rs2_spp <- m_grsm21_rs2 %>%
+  epred_draws(newdata = expand_grid(day_of_year = seq(0, 180, by = 5),
+                                    spp = levels(grsm21$spp)),
+              re_formula = ~ (1 + day_of_year | spp))
+plot_doy_rs2_spp <- ggplot(filter(doy_rs2_spp, day_of_year %in% 25:180), 
+                          aes(x = day_of_year, y = .epred)) +
+  stat_lineribbon(aes(color = spp, fill = after_scale(alpha(color, 0.2))), 
+                  .width = 0.80) +
+  # stat_lineribbon() +
+  # scale_fill_brewer(palette = "Blues") +
+  # facet_wrap(~ spp) +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)", color = "Species",
+       fill = "Species", title = "By species, correlated intercepts/slopes") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_rs2_spp
+# This actually looks quite reasonable, sugar maple is before the other species,
+# while beech and northern red oak are the latest (and slowest)
+
+# Tried a model with random slopes and intercepts for species and individuals
+# but that took a lot longer and had a lot more issues with ESS and divergent
+# transitions. For now at least, I think it's fine to assume slope doesn't vary 
+# among individual trees.
+
+# Re-running a model for 2021 to improve estimates
+m_grsm21_rs3 <- ordbetareg(prop ~ day_of_year + (1 + day_of_year|spp) + (1|id),
+                           data = grsm21, 
+                           iter = 4000,
+                           cores = 4, chains = 4,
+                           control = list(adapt_delta = 0.99))
+
+# Multiple species and years? -------------------------------------------------#
+# Not sure this is worth running given that we'd have to keep model complexity
+# in check and thus, restrict how year might affect trajectories. 
+
+grsm3yr <- grsm %>%
+  filter(yr %in% 2021:2023) %>%
+  mutate(fyr = factor(yr),
+         spp = factor(common_name),
+         id = factor(individual_id),
+         prop = intensity_midpoint / 95) 
+
+m_grsm3yr_rs <- ordbetareg(prop ~ day_of_year + fyr + (1 + day_of_year|spp) + (1|id),
+                           data = grsm3yr, 
+                           iter = 4000,
+                           cores = 4, chains = 4,
+                           control = list(adapt_delta = 0.99))
+
+# save.image("output/grsm-multispp-models.RData")
+#

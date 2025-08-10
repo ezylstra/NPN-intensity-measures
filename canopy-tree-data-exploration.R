@@ -913,6 +913,96 @@ m_rema_gdd <- ordbetareg(prop ~ agdd + (1|individual_id),
                          data = rema, 
                          control = list(adapt_delta = 0.99),
                          iter = 4000, cores = 4, chains = 4)
-# 
-summary(m_rema)
+# Took over 7 hours!
+summary(m_rema_gdd)
+# save(m_rema_gdd, file = "output/rema-gdd-model.RData")
+
+# Expected canopy fullness for each species, ignoring individual REs
+gdd_rema <- m_rema_gdd %>%
+  epred_draws(newdata = expand_grid(agdd = seq(0, 2800, by = 100)),
+              re_formula = NA)
+plot_gdd_rema <- ggplot(filter(gdd_rema, agdd %in% 0:1800), 
+                        aes(x = agdd, y = .epred)) +
+  stat_lineribbon() +
+  scale_fill_brewer(palette = "Blues") +
+  geom_hline(yintercept = 0.50, linetype = "dashed") +
+  labs(x = "AGDD (deg C)", y = "Predicted canopy fullness (%)",
+       fill = "Credible interval",
+       title = "Red maple, ignoring individual effects") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_gdd_rema
+
+# Conditional effects for a new, typical individual (new individual is based on
+# variation among existing individuals)
+gdd_typicalplant <- m_rema_gdd %>%
+  epred_draws(newdata = expand_grid(agdd = seq(0, 2800, by = 50),
+                                    individual_id = "new plant"),
+              re_formula = NULL,
+              allow_new_levels = TRUE,
+              sample_new_levels = "uncertainty")
+plot_gdd_typicalplant <- ggplot(filter(gdd_typicalplant, agdd %in% 0:1800), 
+                                aes(x = agdd, y = .epred)) +
+  stat_lineribbon() +
+  scale_fill_brewer(palette = "Blues") +
+  labs(x = "AGDD (deg C)", y = "Predicted canopy fullness (%)",
+       fill = "Credible interval", 
+       title = "New, typical red maple") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_gdd_typicalplant
+
+# GDD model for multiple species in GRSM --------------------------------------#
+
+# Attach AGDD values to GRSM data (2016-2024)
+agdds <- weather %>%
+  select(site_id, date, agdd) %>%
+  rename(observation_date = date)
+
+grsm <- grsm %>%
+  left_join(agdds, by = c("site_id", "observation_date"))
+
+# Standardized AGDD values and create proportion, factor variables
+grsm <- grsm %>%
+  # Removing 2020 data since it's more sparse (in case I want to compare with yr model)
+  filter(yr != 2020) %>%
+  mutate(agddz = (agdd - mean(agdd)) / sd(agdd),
+         spp = factor(common_name),
+         id = factor(individual_id),
+         prop = intensity_midpoint / 95)
+
+# Multi-species model with GDD instead of doy and year
+m_grsm_gdd <- ordbetareg(prop ~ agddz + (1 + agddz|spp) + (1|id),
+                         data = grsm, 
+                         control = list(adapt_delta = 0.99),
+                         iter = 4000, cores = 4, chains = 4,
+                         backend = "cmdstanr")
+#
+save(m_grsm_gdd, file = "output/grsm-gdd-model.RData")
+#
+# If this is still taking forever, we could look into priors for SD parameters
+# in particular
+
+# Expected canopy fullness for each species, ignoring individual REs
+gdd_spp <- m_grsm_gdd %>%
+  epred_draws(newdata = expand_grid(agddz = seq(-1.654, 3.1133, length = 100),
+                                    spp = levels(grsm$spp)),
+              re_formula = ~ (1 + agddz | spp))
+plot_gdd_spp <- ggplot(filter(gdd_spp, agddz < 2), 
+                       aes(x = agddz, y = .epred)) +
+  stat_lineribbon(aes(color = spp, fill = after_scale(alpha(color, 0.2))), 
+                  .width = 0.80) +
+  # stat_lineribbon() +
+  # scale_fill_brewer(palette = "Blues") +
+  # facet_wrap(~ spp) +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)", color = "Species",
+       fill = "Species", title = "By species, correlated intercepts/slopes") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_gdd_spp
+# Don't have other models to compare with since this is the first time I used
+# all years for GRSM sites, but the plot seems interesting. Sugar adn Striped
+# maples early (very similar) then red maple, then basswood adn red oak reach
+# 50% (though basswood starts later and ramps up faster), then beech, which
+# fills slowly.
 

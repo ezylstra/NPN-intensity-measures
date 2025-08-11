@@ -998,11 +998,9 @@ plot_gdd_spp <- ggplot(filter(gdd_spp, agddz < 2),
   theme_bw() +
   theme(legend.position = "bottom")
 plot_gdd_spp
-# Don't have other models to compare with since this is the first time I used
-# all years for GRSM sites, but the plot seems interesting. Sugar and striped
-# maples early (very similar) then red maple, then basswood and red oak reach
-# 50% (though basswood starts later and ramps up faster), then beech, which
-# fills slowly.
+# Plot seems interesting. Sugar and striped maples are early (very similar 
+# curves) then red maple, then basswood and red oak reach 50% (though basswood 
+# starts later and ramps up faster), then beech, which fills slowly.
 
 # Multi-species model with doy and year
 grsm <- grsm %>%
@@ -1020,4 +1018,52 @@ end_time - start_time
 save(m_grsm_doy, file = "output/grsm-doy-model.RData")
 #
 summary(m_grsm_doy)
+
+# Expected canopy fullness for each species in 2016/2019, ignoring individual REs
+doy_spp <- m_grsm_doy %>%
+  epred_draws(newdata = expand_grid(doyz = seq(-2.12, 2.24, length = 100),
+                                    fyr = c("2016", "2019"), 
+                                    spp = levels(grsm$spp)),
+              re_formula = ~ (1 + doyz | spp))
+plot_doy_spp <- ggplot(filter(doy_spp, doyz > -1 & doyz < 2), 
+                       aes(x = doyz, y = .epred)) +
+  stat_lineribbon(aes(color = spp, fill = after_scale(alpha(color, 0.2))), 
+                  .width = 0.80) +
+  facet_grid(fyr ~.) +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)", color = "Species",
+       fill = "Species", title = "By species, correlated intercepts/slopes") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_spp
+# Plot not too different than GDD. All the maples are earlier. Basswood starts 
+# slow but then ramps up quickly. Finally oack, then beech. 
+# No differences in slope among years, but can have different intercepts. 
+# This might be too restrictive. Better to have (1 + doyz | fyr)?
+
+# Compare GDD, DOY models for GRSM:
+loo_gdd <- loo(m_grsm_gdd, cores = 4)
+loo_gdd
+loo_doy <- loo(m_grsm_doy, cores = 4)
+loo_doy
+loo_compare(loo_gdd, loo_doy)
+# According to LOO cross validation, the DOY model is a much better fit to the 
+# data than the GDD model (elpd_diff = 0; looic is much lower for DOY model).
+
+# Compare estimates
+coef(m_grsm_gdd)$spp
+coef(m_grsm_doy)$spp
+
+################################################################################
+# Multi-species model with doy and year as random effect
+start_time <- Sys.time()
+m_grsm_doy2 <- ordbetareg(prop ~ doyz + (1 + doyz|fyr) + (1 + doyz|spp) + (1|id),
+                          data = grsm,
+                          control = list(adapt_delta = 0.99),
+                          iter = 4000, cores = 4, chains = 4,
+                          backend = "cmdstanr")
+end_time <- Sys.time()
+end_time - start_time
+save(m_grsm_doy2, file = "output/grsm-doy-randomyr-model.RData")
 #
+summary(m_grsm_doy2)
+

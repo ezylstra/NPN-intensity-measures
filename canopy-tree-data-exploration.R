@@ -978,10 +978,8 @@ m_grsm_gdd <- ordbetareg(prop ~ agddz + (1 + agddz|spp) + (1|id),
                          iter = 4000, cores = 4, chains = 4,
                          backend = "cmdstanr")
 #
-save(m_grsm_gdd, file = "output/grsm-gdd-model.RData")
+# save(m_grsm_gdd, file = "output/grsm-gdd-model.RData")
 #
-# If this is still taking forever, we could look into priors for SD parameters
-# in particular
 
 # Expected canopy fullness for each species, ignoring individual REs
 gdd_spp <- m_grsm_gdd %>%
@@ -1001,8 +999,25 @@ plot_gdd_spp <- ggplot(filter(gdd_spp, agddz < 2),
   theme(legend.position = "bottom")
 plot_gdd_spp
 # Don't have other models to compare with since this is the first time I used
-# all years for GRSM sites, but the plot seems interesting. Sugar adn Striped
-# maples early (very similar) then red maple, then basswood adn red oak reach
+# all years for GRSM sites, but the plot seems interesting. Sugar and striped
+# maples early (very similar) then red maple, then basswood and red oak reach
 # 50% (though basswood starts later and ramps up faster), then beech, which
 # fills slowly.
 
+# Multi-species model with doy and year
+grsm <- grsm %>%
+  mutate(fyr = factor(yr),
+         doyz = (day_of_year - mean(day_of_year)) / sd(day_of_year)) 
+
+start_time <- Sys.time()
+m_grsm_doy <- ordbetareg(prop ~ doyz + fyr + (1 + doyz|spp) + (1|id),
+                         data = grsm,
+                         control = list(adapt_delta = 0.99),
+                         iter = 4000, cores = 4, chains = 4,
+                         backend = "cmdstanr")
+end_time <- Sys.time()
+end_time - start_time
+save(m_grsm_doy, file = "output/grsm-doy-model.RData")
+#
+summary(m_grsm_doy)
+#

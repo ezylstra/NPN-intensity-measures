@@ -111,7 +111,7 @@ si <- si %>%
 # ok and it's much easier to understand how that happens
 si <- filter(si, is.na(state) | state != "ND")
 
-# Only a few red mapl etrees east of -78 longitude, so we'll filter them out
+# Only a few red maple trees east of -78 longitude, so we'll filter them out
 si <- filter(si, longitude <= (-78))
 
 # Just going to focus on canopy fullness for now, so eliminating everything else
@@ -126,7 +126,6 @@ si <- filter(si, day_of_year <= 182)
   # remove plant-year combos with no observations with intensity values
   # remove plant-year combos with < 5 observations
   # remove plant-year combos when max interval > 21 days
-  #### May want to revisit this interval length filter
 
 # Summarize amount and quality of information for each plant, year
 pl_yr <- si %>%
@@ -316,8 +315,8 @@ for (spp in spps) {
   }
 }
 
-# American beech is an outlier, since looks like some of trees retained their
-# leaves through the winter, especially in later years.
+# American beech looks a little different, since some of trees might retain 
+# their leaves through the winter, especially in later years.
 
 # Look at:
 # Weird American beech in 2017
@@ -990,10 +989,11 @@ plot_gdd_spp <- ggplot(filter(gdd_spp, agddz < 2),
                        aes(x = agddz, y = .epred)) +
   stat_lineribbon(aes(color = spp, fill = after_scale(alpha(color, 0.2))), 
                   .width = 0.80) +
+  geom_hline(yintercept = 0.5, linetype = "dotted") +
   # stat_lineribbon() +
   # scale_fill_brewer(palette = "Blues") +
   # facet_wrap(~ spp) +
-  labs(x = "Day of year", y = "Predicted canopy fullness (%)", color = "Species",
+  labs(x = "GDD", y = "Predicted canopy fullness (%)", color = "Species",
        fill = "Species", title = "By species, correlated intercepts/slopes") +
   theme_bw() +
   theme(legend.position = "bottom")
@@ -1040,19 +1040,6 @@ plot_doy_spp
 # No differences in slope among years, but can have different intercepts. 
 # This might be too restrictive. Better to have (1 + doyz | fyr)?
 
-# Compare GDD, DOY models for GRSM:
-loo_gdd <- loo(m_grsm_gdd, cores = 4)
-loo_gdd
-loo_doy <- loo(m_grsm_doy, cores = 4)
-loo_doy
-loo_compare(loo_gdd, loo_doy)
-# According to LOO cross validation, the DOY model is a much better fit to the 
-# data than the GDD model (elpd_diff = 0; looic is much lower for DOY model).
-
-# Compare estimates
-coef(m_grsm_gdd)$spp
-coef(m_grsm_doy)$spp
-
 ################################################################################
 # Multi-species model with doy and year as random effect
 start_time <- Sys.time()
@@ -1066,4 +1053,65 @@ end_time - start_time
 save(m_grsm_doy2, file = "output/grsm-doy-randomyr-model.RData")
 #
 summary(m_grsm_doy2)
+# Took 9.5 hours
+
+# Expected canopy fullness for each species, ignoring individual and year REs
+doy_mn_spp <- m_grsm_doy2 %>%
+  epred_draws(newdata = expand_grid(doyz = seq(-2.12, 2.24, length = 100),
+                                    spp = levels(grsm$spp)),
+              re_formula = ~ (1 + doyz | spp))
+plot_doy_mn_spp <- ggplot(filter(doy_mn_spp, doyz > -1 & doyz < 2), 
+                       aes(x = doyz, y = .epred)) +
+  stat_lineribbon(aes(color = spp, fill = after_scale(alpha(color, 0.2))), 
+                  .width = 0.80) +
+  geom_hline(yintercept = 0.5, linetype = "dotted") +
+  # stat_lineribbon() +
+  # scale_fill_brewer(palette = "Blues") +
+  # facet_wrap(~ spp) +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)", color = "Species",
+       fill = "Species", 
+       title = "By species, across years, correlated intercepts/slopes") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_mn_spp
+
+# Expected canopy fullness for each species and year, ignoring individual REs
+doy_yr_spp <- m_grsm_doy2 %>%
+  epred_draws(newdata = expand_grid(doyz = seq(-2.12, 2.24, length = 100),
+                                    spp = levels(grsm$spp),
+                                    fyr = levels(grsm$fyr)),
+              re_formula = ~ (1 + doyz | spp) + (1 + doyz | fyr))
+plot_doy_yr_spp <- ggplot(filter(doy_yr_spp, doyz > -1 & doyz < 2), 
+                          aes(x = doyz, y = .epred)) +
+  stat_lineribbon(aes(color = spp, fill = after_scale(alpha(color, 0.2))), 
+                  .width = 0.80) +
+  geom_hline(yintercept = 0.5, linetype = "dotted") +
+  # stat_lineribbon() +
+  # scale_fill_brewer(palette = "Blues") +
+  facet_wrap(~ fyr, ncol = 2) +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)", color = "Species",
+       fill = "Species", 
+       title = "By species, correlated intercepts/slopes") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_yr_spp
+
+# Compare GDD, DOY models for GRSM --------------------------------------------#
+
+load("output/grsm-gdd-model.RData")          # m_grsm_gdd
+load("output/grsm-doy-model.RData")          # m_grsm_doy
+load("output/grsm-doy-randomyr-model.RData") # m_grsm_doy2
+
+loo_gdd <- loo(m_grsm_gdd, cores = 4)
+loo_gdd
+loo_doy <- loo(m_grsm_doy, cores = 4)
+loo_doy
+loo_doy2 <- loo(m_grsm_doy2, cores = 4)
+loo_doy2
+loo_compare(loo_gdd, loo_doy, loo_doy2)
+
+# According to LOO cross validation, the DOY model with random year effects
+# is a better fit to the data than the DOY model with fixed year effects and 
+# MUCH better than a GDD model (model with elpd_diff = 0 and/or lowest looic
+# is best)
 

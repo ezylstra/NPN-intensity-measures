@@ -3,6 +3,8 @@
 
 library(tidyverse)
 library(leaflet)
+library(elevatr)
+library(sf)
 library(ordbetareg)   # Loads brms 
 library(tidybayes)    # Manipulate Stan objects in a tidy way
 # library(broom)        # Convert model objects to data frames
@@ -269,16 +271,14 @@ if (!file.exists(png_name)) {
          units = "in")
 }
 
-si %>%
-  filter(remove2 == 0) %>%
-  filter(yr == 2023) %>%
-  ggplot(aes(x = day_of_year, y = intensity_midpoint)) +
-  geom_line() +
-  facet_wrap(~ individual_id) +
-  theme_bw()
-
-# These plots are pretty interesting -- gradual increase in % open for 
-# individual plants.
+# Look at individual curves for a given year
+# si %>%
+#   filter(remove2 == 0) %>%
+#   filter(yr == 2023) %>%
+#   ggplot(aes(x = day_of_year, y = intensity_midpoint)) +
+#   geom_line() +
+#   facet_wrap(~ individual_id) +
+#   theme_bw()
 
 # Not sure how I want to deal with the data after peak intensity value, since I 
 # really just want to model the increase.....
@@ -314,9 +314,102 @@ sif <- sif %>%
   mutate(prop = intensity / 95) %>%
   filter(!is.na(prop))
 
-# Run model for one year ------------------------------------------------------#
+# Fill in missing elevation data ----------------------------------------------#
 
-# May want to fill in missing elevation values
+elev_fill <- filter(sif, is.na(elevation_in_meters)) %>%
+  distinct(site_id, latitude, longitude) %>%
+  st_as_sf(coords = c("longitude", "latitude"), crs = 4326) 
+elev_fill <- get_elev_point(locations = elev_fill, src = "epqs")
+elev_fill <- data.frame(elev_fill) %>%
+  mutate(elev = round(elevation)) %>%
+  select(site_id, elev)
+sif <- sif %>%
+  left_join(elev_fill, by = "site_id") %>%
+  mutate(elev = ifelse(!is.na(elev), elev, elevation_in_meters)) %>%
+  select(-elevation_in_meters)
+
+# Formatting weather data -----------------------------------------------------#
+
+# Weather data was obtained on this website (much faster than using API or prism
+# package for a limited number of sites at high spatial, temporal resolution):
+# https://prism.oregonstate.edu/explorer/bulk.php
+
+prism_folder <- "weather-data/agaves-prism/"
+
+# Daily data
+prism_files <- list.files(prism_folder,
+                          full.names = TRUE,
+                          pattern = "stable")
+for (i in 1:length(prism_files)) {
+  prism1 <- read.csv(prism_files[i],
+                     header = FALSE,
+                     skip = 11,
+                     col.names = c("site_id", "lon", "lat", "elev",
+                                   "date", "ppt", "tmin", "tmean", "tmax"))
+  if (i == 1) {
+    weather <- prism1
+  } else {
+    weather <- rbind(weather, prism1)
+  }
+}
+rm(prism1)
+
+# Try a couple simple variables? Generally looks like plants start flowering
+# in June.
+# Daily variables to explain seasonal curve
+  # GDD from start of year with 0 degC base
+  # GDD from start of year with 50 degF (10 degC) base
+# Yearly variables to explain inter-annual differences
+  # Cumulative precipitation for previous 3, 6, 9, or 12 months
+  # Mean spring temperatures
+  # Winter min temperatures
+
+# Calculate daily GDD values (gdd = tmean - base)
+weather <- weather %>%
+  mutate(gdd0 = ifelse(tmean < 0, 0, tmean - 0)) %>%
+  mutate(gdd10 = ifelse(tmean < 10, 0, tmean - 10)) %>%
+  mutate(yr = year(date),
+         doy = yday(date)) %>%
+  arrange(site_id, date)
+
+# Calculate AGDD values
+weather <- weather %>%
+  group_by(site_id, yr) %>%
+  mutate(agdd0 = cumsum(gdd0),
+         agdd10 = cumsum(gdd10)) %>%
+  ungroup() %>%
+  data.frame()
+
+# Calculate seasonal variables
+weathermonths <- weather %>%
+  mutate(month = month(date)) %>%
+  # Create seasonyr to match up with flowering year
+  mutate(seasonyr = ifelse(month %in% 6:12, yr + 1, yr)) %>%
+  mutate(season = case_when(
+    month %in% 3:5 ~ "sp",
+    month %in% 6:8 ~ "su",
+    month %in% 9:11 ~ "fa",
+    .default = "wi"
+  )) %>%
+  group_by(site_id, seasonyr) %>%
+  summarize(tmin_wi = mean(tmin[season == "wi"]),
+            ppt_3m = sum(ppt[season == "sp"]),
+            ppt_6m = sum(ppt[season %in% c("wi", "sp")]),
+            ppt_9m = sum(ppt[season != "su"]),
+            ppt_12m = sum(ppt),
+            temp_sp = mean(tmean[season == "sp"]),
+            .groups = "keep") %>%
+  filter(seasonyr %in% unique(sif$yr)) %>%
+  data.frame()
+
+# Attach weather data to phenology data
+sif <- sif %>%
+  left_join(select(weather, site_id, date, agdd0, agdd10), 
+            by = c("observation_date" = "date",
+                   "site_id" = "site_id")) %>%
+  left_join(weathermonths, by = c("yr" = "seasonyr", "site_id" = "site_id"))
+
+# Run model for one year ------------------------------------------------------#
 
 # Use one of the filters, create factor variables, and standardize DOY
 sif2_2023 <- sif %>%
@@ -327,14 +420,14 @@ sif2_2023 <- sif %>%
          # fyr = factor(yr),
          site = factor(site_id))
 
+#### Basic DOY model
 m_2023 <- ordbetareg(prop ~ doyz + (1|id),
                      data = sif2_2023,
                      control = list(adapt_delta = 0.9),
                      cores = 4, chains = 4)
 summary(m_2023)
 
-# For a good explanation of the different predictions types (grand mean,
-# marginal effects), see:
+# For a good explanation of different predictions types, see:
 # https://www.andrewheiss.com/blog/2021/11/10/ame-bayes-re-guide/
 
 # Expected proportion open by date, ignoring individual effects (ie, grand mean)
@@ -343,7 +436,6 @@ doy_gm <- m_2023 %>%
                                               max(sif2_2023$doyz),
                                               length = 100)),
               re_formula = NA)
-# This creates a large tibble, with nrows = unique(doy) * no. post samples
 plot_doy_gm <- ggplot(doy_gm, 
                       aes(x = doyz, y = .epred)) +
   stat_lineribbon() +
@@ -394,6 +486,95 @@ plot_doy_newplant <- ggplot(doy_newplant,
   theme(legend.position = "bottom")
 plot_doy_newplant
 
+#### Run model with quadratic term for DOY
+start_time <- Sys.time()
+m_2023q <- ordbetareg(prop ~ doyz + I(doyz^2) + (1|id),
+                      data = sif2_2023,
+                      control = list(adapt_delta = 0.9),
+                      cores = 4, chains = 4)
+end_time <- Sys.time()
+end_time - start_time
+summary(m_2023q)
+
+# Expected proportion open by date, ignoring individual effects (ie, grand mean)
+doyq_gm <- m_2023q %>%
+  epred_draws(newdata = data.frame(doyz = seq(min(sif2_2023$doyz),
+                                              max(sif2_2023$doyz),
+                                              length = 100)),
+              re_formula = NA)
+plot_doyq_gm <- ggplot(doyq_gm, 
+                       aes(x = doyz, y = .epred)) +
+  stat_lineribbon() +
+  scale_fill_brewer(palette = "Blues") +
+  labs(x = "Day of year", y = "Predicted proportion of flowers open (%)",
+       fill = "Credible interval", 
+       title = "Quadatic model, ignoring individual effects") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doyq_gm
+
+#### Run model with AGDD, base 0
+sif2_2023 <- sif2_2023 %>%
+  mutate(agdd0z = (agdd0 - mean(agdd0)) / sd(agdd0))
+
+start_time <- Sys.time()
+m_2023gdd0 <- ordbetareg(prop ~ agdd0z + I(agdd0z^2) + (1|id),
+                         data = sif2_2023,
+                         control = list(adapt_delta = 0.9),
+                         cores = 4, chains = 4)
+end_time <- Sys.time()
+end_time - start_time
+summary(m_2023gdd0)
+
+#### Run model with AGDD, base 10
+sif2_2023 <- sif2_2023 %>%
+  mutate(agdd10z = (agdd10 - mean(agdd10)) / sd(agdd10))
+
+start_time <- Sys.time()
+m_2023gdd10 <- ordbetareg(prop ~ agdd10z + I(agdd10z^2) + (1|id),
+                          data = sif2_2023,
+                          control = list(adapt_delta = 0.9),
+                          cores = 4, chains = 4)
+end_time <- Sys.time()
+end_time - start_time
+summary(m_2023gdd10)
+
+loo_1 <- loo(m_2023)
+loo_q <- loo(m_2023q)
+loo_gdd0 <- loo(m_2023gdd0)
+loo_gdd10 <- loo(m_2023gdd10)
+loo_1
+loo_q
+loo_gdd0
+loo_gdd10
+loo_compare(loo_1, loo_q, loo_gdd0, loo_gdd10)
+# LOOCV suggests the quadratic DOY model is the best fit to data, followed 
+# closely by GDD:base0 and then GDD:base10. 
+# All models took less than 5 minutes to run.
+
+#### Model with elevation and quadratic DOY effect
+sif2_2023 <- sif2_2023 %>%
+  mutate(elevz = (elev - mean(elev)) / sd(elev))
+
+start_time <- Sys.time()
+m_2023qe <- ordbetareg(prop ~ doyz + I(doyz^2) + elevz + (1|id),
+                       data = sif2_2023,
+                       control = list(adapt_delta = 0.9),
+                       cores = 4, chains = 4)
+end_time <- Sys.time()
+end_time - start_time
+summary(m_2023qe)
+
+loo_qe <- loo(m_2023qe)
+loo_compare(loo_qe, loo_q)
+# Elevation doesn't seem to contribute anything. Credible interval widely 
+# overlaps zeroo and LOOCV suggests the model is no better than the model 
+# without elevation.
+
+
+
+
+
 # Run models for multiple years -----------------------------------------------#
 
 # Use one of the filters, create factor variables, and standardize DOY
@@ -405,12 +586,14 @@ sif2 <- sif %>%
          site = factor(site_id))
 
 # Modeling year as a random effect
+start_time <- Sys.time()
 m_allyrs <- ordbetareg(prop ~ doyz + (1 + doyz|fyr) + (1|id),
                        data = sif2,
-                       # control = list(adapt_delta = 0.9),
+                       control = list(adapt_delta = 0.99),
                        cores = 4, chains = 4)
+end_time <- Sys.time()
+end_time - start_time
 summary(m_allyrs)
-# Less than 10 min to run, but problems with divergent transitions and ESS
 coef(m_allyrs)$fyr
 
 # Expected proportion open by year, ignoring individual REs

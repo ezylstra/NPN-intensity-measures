@@ -380,6 +380,29 @@ weather <- weather %>%
   ungroup() %>%
   data.frame()
 
+# What do GDD values compare among years?
+gdd_annual <- weather %>%
+  group_by(yr) %>%
+  summarize(gdd0_100 = mean(agdd0[doy == 100]),
+            gdd0_150 = mean(agdd0[doy == 150]),
+            gdd0_200 = mean(agdd0[doy == 200]),
+            gdd0_250 = mean(agdd0[doy == 250]),
+            gdd10_100 = mean(agdd10[doy == 100]),
+            gdd10_150 = mean(agdd10[doy == 150]),
+            gdd10_200 = mean(agdd10[doy == 200]),
+            gdd10_250 = mean(agdd10[doy == 250])) %>%
+  pivot_longer(!yr,
+               names_to = "metric",
+               values_to = "value") %>%
+  separate_wider_delim(cols = "metric", delim = "_", names = c("gdd", "doy")) %>%
+  mutate(doy = as.numeric(doy),
+         yr = as.factor(yr)) %>%
+  data.frame()
+ggplot(data = filter(gdd_annual, doy < 175), 
+       aes(x = doy, y = value)) +
+  geom_line(aes(color = yr)) + 
+  facet_grid(gdd ~ ., scales = "free_y")
+
 # Calculate seasonal variables
 weathermonths <- weather %>%
   mutate(month = month(date)) %>%
@@ -591,105 +614,117 @@ sif2 <- sif %>%
          fyr = factor(yr),
          site = factor(site_id))
 
-# DOY model with spring (3-month) precipitation
-start_doyp3 <- Sys.time()
-m_doyp3 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_3mz + (1|id),
-                      data = sif2,
-                      control = list(adapt_delta = 0.99),
-                      iter = 4000, cores = 4, chains = 4)
-end_doyp3 <- Sys.time()
-save(m_doyp3, file = "output/agave-multiyr-models/doyp3.RData")
-end_doyp3 - start_doyp3
+# # DOY model with spring (3-month) precipitation
+# start_doyp3 <- Sys.time()
+# m_doyp3 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_3mz + (1|id),
+#                       data = sif2,
+#                       control = list(adapt_delta = 0.99),
+#                       iter = 4000, cores = 4, chains = 4)
+# end_doyp3 <- Sys.time()
+# save(m_doyp3, file = "output/agave-multiyr-models/doyp3.RData")
+# end_doyp3 - start_doyp3
+# 
+# # DOY model with 6-month precipitation
+# start_doyp6 <- Sys.time()
+# m_doyp6 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_6mz + (1|id),
+#                       data = sif2,
+#                       control = list(adapt_delta = 0.99),
+#                       iter = 4000, cores = 4, chains = 4)
+# end_doyp6 <- Sys.time()
+# save(m_doyp6, file = "output/agave-multiyr-models/doyp6.RData")
+# end_doyp6 - start_doyp6
+# 
+# # DOY model with 9-month precipitation
+# start_doyp9 <- Sys.time()
+# m_doyp9 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_9mz + (1|id),
+#                       data = sif2,
+#                       control = list(adapt_delta = 0.99),
+#                       iter = 4000, cores = 4, chains = 4)
+# end_doyp9 <- Sys.time()
+# save(m_doyp9, file = "output/agave-multiyr-models/doyp9.RData")
+# end_doyp9 - start_doyp9
+# 
+# # DOY model with 12-month precipitation
+# start_doyp12 <- Sys.time()
+# m_doyp12 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_12mz + (1|id),
+#                        data = sif2,
+#                        control = list(adapt_delta = 0.99),
+#                        iter = 4000, cores = 4, chains = 4)
+# end_doyp12 <- Sys.time()
+# save(m_doyp12, file = "output/agave-multiyr-models/doyp12.RData")
+# end_doyp12 - start_doyp12
+# 
+# # DOY model with spring temperatures
+# start_doyspt <- Sys.time()
+# m_doyspt <- ordbetareg(prop ~ doyz + I(doyz^2) + temp_spz + (1|id),
+#                        data = sif2,
+#                        control = list(adapt_delta = 0.99),
+#                        iter = 4000, cores = 4, chains = 4)
+# end_doyspt <- Sys.time()
+# save(m_doyspt, file = "output/agave-multiyr-models/doyspt.RData")
+# end_doyspt - start_doyspt
+# 
+# # DOY model with winter temperatures
+# start_doywit <- Sys.time()
+# m_doywit <- ordbetareg(prop ~ doyz + I(doyz^2) + tmin_wiz + (1|id),
+#                        data = sif2,
+#                        control = list(adapt_delta = 0.99),
+#                        iter = 4000, cores = 4, chains = 4)
+# end_doywit <- Sys.time()
+# save(m_doywit, file = "output/agave-multiyr-models/doywit.RData")
+# end_doywit - start_doywit
+# 
+# # DOY model with random year effects
+# start_doyfyr <- Sys.time()
+# m_doyfyr <- ordbetareg(prop ~ doyz + doyz2 + (1 + doyz + doyz2|fyr) + (1|id),
+#                        data = sif2,
+#                        control = list(adapt_delta = 0.99),
+#                        iter = 4000, cores = 4, chains = 4)
+# end_doyfyr <- Sys.time()
+# save(m_doyfyr, file = "output/agave-multiyr-models/doyfyr.RData")
+# end_doyfyr - start_doyfyr
+# 
+# # GDD model, assuming effects of gdd are the same each year
+# start_gdd <- Sys.time()
+# m_gdd <- ordbetareg(prop ~ agdd0z + I(agdd0z^2) + (1|id),
+#                     data = sif2,
+#                     control = list(adapt_delta = 0.99),
+#                     iter = 4000, cores = 4, chains = 4)
+# end_gdd <- Sys.time()
+# save(m_gdd, file = "output/agave-multiyr-models/gdd.RData")
+# end_gdd - start_gdd
+# 
+# # GDD model, random yearly intercepts
+# start_gddREi <- Sys.time()
+# m_gddREi <- ordbetareg(prop ~ agdd0z + I(agdd0z^2) + (1|fyr) + (1|id),
+#                        data = sif2,
+#                        control = list(adapt_delta = 0.99),
+#                        iter = 4000, cores = 4, chains = 4)
+# end_gddREi <- Sys.time()
+# save(m_gddREi, file = "output/agave-multiyr-models/gddREi.RData")
+# end_gddREi - start_gddREi
+# 
+# # GDD model, random yearly intercepts and slopes
+# start_gddREis <- Sys.time()
+# m_gddREis <- ordbetareg(prop ~ agdd0z + agdd0z2 + (1 + agdd0z + agdd0z2|fyr) + (1|id),
+#                         data = sif2,
+#                         control = list(adapt_delta = 0.99),
+#                         iter = 4000, cores = 4, chains = 4)
+# end_gddREis <- Sys.time()
+# save(m_gddREis, file = "output/agave-multiyr-models/gddREis.RData")
+# end_gddREis - start_gddREis
 
-# DOY model with 6-month precipitation
-start_doyp6 <- Sys.time()
-m_doyp6 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_6mz + (1|id),
-                      data = sif2,
-                      control = list(adapt_delta = 0.99),
-                      iter = 4000, cores = 4, chains = 4)
-end_doyp6 <- Sys.time()
-save(m_doyp6, file = "output/agave-multiyr-models/doyp6.RData")
-end_doyp6 - start_doyp6
-
-# DOY model with 9-month precipitation
-start_doyp9 <- Sys.time()
-m_doyp9 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_9mz + (1|id),
-                      data = sif2,
-                      control = list(adapt_delta = 0.99),
-                      iter = 4000, cores = 4, chains = 4)
-end_doyp9 <- Sys.time()
-save(m_doyp9, file = "output/agave-multiyr-models/doyp9.RData")
-end_doyp9 - start_doyp9
-
-# DOY model with 12-month precipitation
-start_doyp12 <- Sys.time()
-m_doyp12 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_12mz + (1|id),
-                       data = sif2,
-                       control = list(adapt_delta = 0.99),
-                       iter = 4000, cores = 4, chains = 4)
-end_doyp12 <- Sys.time()
-save(m_doyp12, file = "output/agave-multiyr-models/doyp12.RData")
-end_doyp12 - start_doyp12
-
-# DOY model with spring temperatures
-start_doyspt <- Sys.time()
-m_doyspt <- ordbetareg(prop ~ doyz + I(doyz^2) + temp_spz + (1|id),
-                       data = sif2,
-                       control = list(adapt_delta = 0.99),
-                       iter = 4000, cores = 4, chains = 4)
-end_doyspt <- Sys.time()
-save(m_doyspt, file = "output/agave-multiyr-models/doyspt.RData")
-end_doyspt - start_doyspt
-
-# DOY model with winter temperatures
-start_doywit <- Sys.time()
-m_doywit <- ordbetareg(prop ~ doyz + I(doyz^2) + tmin_wiz + (1|id),
-                       data = sif2,
-                       control = list(adapt_delta = 0.99),
-                       iter = 4000, cores = 4, chains = 4)
-end_doywit <- Sys.time()
-save(m_doywit, file = "output/agave-multiyr-models/doywit.RData")
-end_doywit - start_doywit
-
-# DOY model with random year effects
-start_doyfyr <- Sys.time()
-m_doyfyr <- ordbetareg(prop ~ doyz + doyz2 + (1 + doyz + doyz2|fyr) + (1|id),
-                       data = sif2,
-                       control = list(adapt_delta = 0.99),
-                       iter = 4000, cores = 4, chains = 4)
-end_doyfyr <- Sys.time()
-save(m_doyfyr, file = "output/agave-multiyr-models/doyfyr.RData")
-end_doyfyr - start_doyfyr
-
-# GDD model, assuming effects of gdd are the same each year
-start_gdd <- Sys.time()
-m_gdd <- ordbetareg(prop ~ agdd0z + I(agdd0z^2) + (1|id),
-                    data = sif2,
-                    control = list(adapt_delta = 0.99),
-                    iter = 4000, cores = 4, chains = 4)
-end_gdd <- Sys.time()
-save(m_gdd, file = "output/agave-multiyr-models/gdd.RData")
-end_gdd - start_gdd
-
-# GDD model, random yearly intercepts
-start_gddREi <- Sys.time()
-m_gddREi <- ordbetareg(prop ~ agdd0z + I(agdd0z^2) + (1|fyr) + (1|id),
-                       data = sif2,
-                       control = list(adapt_delta = 0.99),
-                       iter = 4000, cores = 4, chains = 4)
-end_gddREi <- Sys.time()
-save(m_gddREi, file = "output/agave-multiyr-models/gddREi.RData")
-end_gddREi - start_gddREi
-
-# GDD model, random yearly intercepts and slopes
-start_gddREis <- Sys.time()
-m_gddREis <- ordbetareg(prop ~ agdd0z + agdd0z2 + (1 + agdd0z + agdd0z2|fyr) + (1|id),
-                        data = sif2,
-                        control = list(adapt_delta = 0.99),
-                        iter = 4000, cores = 4, chains = 4)
-end_gddREis <- Sys.time()
-save(m_gddREis, file = "output/agave-multiyr-models/gddREis.RData")
-end_gddREis - start_gddREis
+# Load models if they've already been run:
+load("output/agave-multiyr-models/doyp3.RData")
+load("output/agave-multiyr-models/doyp6.RData")
+load("output/agave-multiyr-models/doyp9.RData")
+load("output/agave-multiyr-models/doyp12.RData")
+load("output/agave-multiyr-models/doyfyr.RData")
+load("output/agave-multiyr-models/doyspt.RData")
+load("output/agave-multiyr-models/doywit.RData")
+load("output/agave-multiyr-models/gdd.RData")
+load("output/agave-multiyr-models/gddREi.RData")
+load("output/agave-multiyr-models/gddREis.RData")
 
 # Compare multi-year models
 loo_doyp3 <- loo(m_doyp3)
@@ -757,4 +792,34 @@ plot_doy_yr2
 #        plot_doy_yr2,
 #        width = 6.5,
 #        height = 6,
+#        units = "in")
+
+# Visualize results from highest-ranked GDD model
+
+agdd0z <- seq(min(sif2$agdd0z), max(sif2$agdd0z), length = 100)
+
+newdata <- expand_grid(agdd0z = agdd0z,
+                       fyr = levels(sif2$fyr)) %>%
+  mutate(agdd0z2 = agdd0z * agdd0z) %>%
+  mutate(agdd0 = agdd0z * sd(sif2$agdd0) + mean(sif2$agdd0)) %>%
+  data.frame()
+
+gdd_yr <- m_gddREis %>%
+  epred_draws(newdata = newdata,
+              re_formula = ~ (1 + agdd0z + agdd0z2|fyr)) 
+plot_gdd_yr <- ggplot(gdd_yr, 
+                      aes(x = agdd0, y = .epred)) +
+  stat_lineribbon(aes(color = fyr, fill = after_scale(alpha(color, 0.2))), 
+                  .width = 0.80) +
+  labs(x = "AGDD (base 0)", y = "Predicted proportion of flowers open (%)", 
+       color = "Year",
+       fill = "Year", 
+       title = "By year, correlated intercepts/slopes") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_gdd_yr
+# ggsave("output/agave-multiyr-models/gdd-fyr.png",
+#        plot_gdd_yr,
+#        width = 6.5,
+#        height = 4,
 #        units = "in")

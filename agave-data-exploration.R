@@ -7,9 +7,6 @@ library(elevatr)
 library(sf)
 library(ordbetareg)   # Loads brms 
 library(tidybayes)    # Manipulate Stan objects in a tidy way
-# library(broom)        # Convert model objects to data frames
-# library(broom.mixed)  # Convert brms model objects to data frames
-# library(emmeans)      # Calculate marginal effects in even fancier ways
 
 # Load and format status-intensity data ---------------------------------------#
 
@@ -214,6 +211,7 @@ si %>%
   summarize(n_obs = n(),
             n_sites = n_distinct(site_id),
             n_plants = n_distinct(individual_id),
+            n_plantyrs = n_distinct(paste0(individual_id, "_", yr)),
             obs_per_plant = n_obs / n_plants) %>%
   data.frame()
 si %>%
@@ -222,6 +220,7 @@ si %>%
   summarize(n_obs = n(),
             n_sites = n_distinct(site_id),
             n_plants = n_distinct(individual_id),
+            n_plantyrs = n_distinct(paste0(individual_id, "_", yr)),
             obs_per_plant = n_obs / n_plants) %>%
   data.frame()
 
@@ -236,6 +235,10 @@ sites <- si %>%
 # write.table(sites, "weather-data/agave-sites.csv", sep = ",",
 #             row.names = FALSE,
 #             col.names = FALSE)
+
+# Map
+leaflet(sites) %>% addTiles() %>%
+  addCircleMarkers(lng = ~longitude, lat = ~latitude)
 
 # Plot raw intensity data -----------------------------------------------------#
 # Using 2nd filter for now
@@ -291,23 +294,65 @@ sif <- si %>%
   filter(remove1 == 0 | remove2 == 0)
 
 # For each plant and year, will find last instance with status = 1 and make all 
-# intensity values after that date = NA
+# intensity values after that date = NA. 
+# Note: there were a few plants that had a > 40 day gap between open flower
+# observations (with 0s in between). I think we'll focus on initial flowering 
+# period and remove observations after the end of first period.
+
+# Find instances where there's a long gap between open flower periods:
+sif1 <- sif %>%
+  filter(phenophase_status == 1) %>%
+  mutate(interval1 = NA)
+for (i in 1:(nrow(sif1)-1)) {
+  sif1$interval1[i] <- ifelse(
+    sif1$individual_id[i] == sif1$individual_id[i + 1] &
+      sif1$yr[i] == sif1$yr[i + 1], 
+    sif1$day_of_year[i + 1] - sif1$day_of_year[i], 
+    NA
+  )
+}
+sif1 <- sif1 %>%
+  mutate(gap = ifelse(interval1 > 40, 1, 0))
+
+sif1g <- sif %>%
+  left_join(select(sif1, individual_id, observation_date, gap), 
+            by = c("individual_id", "observation_date")) %>%
+  group_by(individual_id, yr) %>%
+  summarize(gap_yr = ifelse(1 %in% gap, 1, 0), 
+            gap_start = ifelse(gap_yr == 0, NA, day_of_year[gap == 1 & !is.na(gap)]),
+            .groups = "keep") %>%
+  select(-gap_yr) %>%
+  data.frame()
+
+sif <- sif %>%
+  left_join(sif1g, by = c("individual_id", "yr")) %>%
+  group_by(individual_id, yr) %>%
+  mutate(remove_gap = case_when(
+    sum(is.na(gap_start)) == n() ~ 0,
+    day_of_year > gap_start ~ 1,
+    .default = 0
+  )) %>%
+  ungroup() %>%
+  data.frame()
+
 sif <- sif %>%
   group_by(individual_id, yr) %>%
   mutate(last_yes = max(day_of_year[phenophase_status == 1])) %>%
   ungroup() %>%
   data.frame()
+
 sif <- sif %>%
-  mutate(intensity = ifelse(day_of_year > last_yes, NA, intensity_midpoint))
+  mutate(intensity = ifelse(day_of_year > last_yes, NA, intensity_midpoint)) %>%
+  mutate(intensity = ifelse(remove_gap == 1, NA, intensity))
 
 # Check:
-# sif %>%
-#   filter(remove2 == 0) %>%
-#   filter(yr == 2023) %>%
-#   ggplot(aes(x = day_of_year, y = intensity)) +
-#   geom_line() +
-#   facet_wrap(~ individual_id) +
-#   theme_bw()
+sif %>%
+  filter(remove2 == 0) %>%
+  filter(yr == 2018) %>%
+  ggplot(aes(x = day_of_year, y = intensity)) +
+  geom_line() +
+  facet_wrap(~ individual_id) +
+  theme_bw()
 
 # Convert intensities to proportions and remove NAs
 sif <- sif %>%
@@ -315,11 +360,13 @@ sif <- sif %>%
   filter(!is.na(prop))
 
 # Fill in missing elevation data ----------------------------------------------#
+# Switched src to aws (from epqs) when I ran into issues accessing an API
 
 elev_fill <- filter(sif, is.na(elevation_in_meters)) %>%
   distinct(site_id, latitude, longitude) %>%
   st_as_sf(coords = c("longitude", "latitude"), crs = 4326) 
-elev_fill <- get_elev_point(locations = elev_fill, src = "epqs")
+# elev_fill <- get_elev_point(locations = elev_fill, src = "epqs")
+elev_fill <- get_elev_point(locations = elev_fill, src = "aws")
 elev_fill <- data.frame(elev_fill) %>%
   mutate(elev = round(elevation)) %>%
   select(site_id, elev)
@@ -614,105 +661,119 @@ sif2 <- sif %>%
          fyr = factor(yr),
          site = factor(site_id))
 
-# # DOY model with spring (3-month) precipitation
-# start_doyp3 <- Sys.time()
-# m_doyp3 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_3mz + (1|id),
-#                       data = sif2,
-#                       control = list(adapt_delta = 0.99),
-#                       iter = 4000, cores = 4, chains = 4)
-# end_doyp3 <- Sys.time()
-# save(m_doyp3, file = "output/agave-multiyr-models/doyp3.RData")
-# end_doyp3 - start_doyp3
-# 
-# # DOY model with 6-month precipitation
-# start_doyp6 <- Sys.time()
-# m_doyp6 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_6mz + (1|id),
-#                       data = sif2,
-#                       control = list(adapt_delta = 0.99),
-#                       iter = 4000, cores = 4, chains = 4)
-# end_doyp6 <- Sys.time()
-# save(m_doyp6, file = "output/agave-multiyr-models/doyp6.RData")
-# end_doyp6 - start_doyp6
-# 
-# # DOY model with 9-month precipitation
-# start_doyp9 <- Sys.time()
-# m_doyp9 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_9mz + (1|id),
-#                       data = sif2,
-#                       control = list(adapt_delta = 0.99),
-#                       iter = 4000, cores = 4, chains = 4)
-# end_doyp9 <- Sys.time()
-# save(m_doyp9, file = "output/agave-multiyr-models/doyp9.RData")
-# end_doyp9 - start_doyp9
-# 
-# # DOY model with 12-month precipitation
-# start_doyp12 <- Sys.time()
-# m_doyp12 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_12mz + (1|id),
-#                        data = sif2,
-#                        control = list(adapt_delta = 0.99),
-#                        iter = 4000, cores = 4, chains = 4)
-# end_doyp12 <- Sys.time()
-# save(m_doyp12, file = "output/agave-multiyr-models/doyp12.RData")
-# end_doyp12 - start_doyp12
-# 
-# # DOY model with spring temperatures
-# start_doyspt <- Sys.time()
-# m_doyspt <- ordbetareg(prop ~ doyz + I(doyz^2) + temp_spz + (1|id),
-#                        data = sif2,
-#                        control = list(adapt_delta = 0.99),
-#                        iter = 4000, cores = 4, chains = 4)
-# end_doyspt <- Sys.time()
-# save(m_doyspt, file = "output/agave-multiyr-models/doyspt.RData")
-# end_doyspt - start_doyspt
-# 
-# # DOY model with winter temperatures
-# start_doywit <- Sys.time()
-# m_doywit <- ordbetareg(prop ~ doyz + I(doyz^2) + tmin_wiz + (1|id),
-#                        data = sif2,
-#                        control = list(adapt_delta = 0.99),
-#                        iter = 4000, cores = 4, chains = 4)
-# end_doywit <- Sys.time()
-# save(m_doywit, file = "output/agave-multiyr-models/doywit.RData")
-# end_doywit - start_doywit
-# 
-# # DOY model with random year effects
-# start_doyfyr <- Sys.time()
-# m_doyfyr <- ordbetareg(prop ~ doyz + doyz2 + (1 + doyz + doyz2|fyr) + (1|id),
-#                        data = sif2,
-#                        control = list(adapt_delta = 0.99),
-#                        iter = 4000, cores = 4, chains = 4)
-# end_doyfyr <- Sys.time()
-# save(m_doyfyr, file = "output/agave-multiyr-models/doyfyr.RData")
-# end_doyfyr - start_doyfyr
-# 
-# # GDD model, assuming effects of gdd are the same each year
-# start_gdd <- Sys.time()
-# m_gdd <- ordbetareg(prop ~ agdd0z + I(agdd0z^2) + (1|id),
-#                     data = sif2,
-#                     control = list(adapt_delta = 0.99),
-#                     iter = 4000, cores = 4, chains = 4)
-# end_gdd <- Sys.time()
-# save(m_gdd, file = "output/agave-multiyr-models/gdd.RData")
-# end_gdd - start_gdd
-# 
-# # GDD model, random yearly intercepts
-# start_gddREi <- Sys.time()
-# m_gddREi <- ordbetareg(prop ~ agdd0z + I(agdd0z^2) + (1|fyr) + (1|id),
-#                        data = sif2,
-#                        control = list(adapt_delta = 0.99),
-#                        iter = 4000, cores = 4, chains = 4)
-# end_gddREi <- Sys.time()
-# save(m_gddREi, file = "output/agave-multiyr-models/gddREi.RData")
-# end_gddREi - start_gddREi
-# 
-# # GDD model, random yearly intercepts and slopes
-# start_gddREis <- Sys.time()
-# m_gddREis <- ordbetareg(prop ~ agdd0z + agdd0z2 + (1 + agdd0z + agdd0z2|fyr) + (1|id),
-#                         data = sif2,
-#                         control = list(adapt_delta = 0.99),
-#                         iter = 4000, cores = 4, chains = 4)
-# end_gddREis <- Sys.time()
-# save(m_gddREis, file = "output/agave-multiyr-models/gddREis.RData")
-# end_gddREis - start_gddREis
+# DOY model with spring (3-month) precipitation
+start_doyp3 <- Sys.time()
+m_doyp3 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_3mz + (1|id),
+                      data = sif2,
+                      control = list(adapt_delta = 0.99),
+                      iter = 4000, cores = 4, chains = 4)
+end_doyp3 <- Sys.time()
+save(m_doyp3, file = "output/agave-multiyr-models/doyp3.RData")
+end_doyp3 - start_doyp3
+
+# DOY model with 6-month precipitation
+start_doyp6 <- Sys.time()
+m_doyp6 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_6mz + (1|id),
+                      data = sif2,
+                      control = list(adapt_delta = 0.99),
+                      iter = 4000, cores = 4, chains = 4)
+end_doyp6 <- Sys.time()
+save(m_doyp6, file = "output/agave-multiyr-models/doyp6.RData")
+end_doyp6 - start_doyp6
+
+# DOY model with 9-month precipitation
+start_doyp9 <- Sys.time()
+m_doyp9 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_9mz + (1|id),
+                      data = sif2,
+                      control = list(adapt_delta = 0.99),
+                      iter = 4000, cores = 4, chains = 4)
+end_doyp9 <- Sys.time()
+save(m_doyp9, file = "output/agave-multiyr-models/doyp9.RData")
+end_doyp9 - start_doyp9
+
+# DOY model with 12-month precipitation
+start_doyp12 <- Sys.time()
+m_doyp12 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_12mz + (1|id),
+                       data = sif2,
+                       control = list(adapt_delta = 0.99),
+                       iter = 4000, cores = 4, chains = 4)
+end_doyp12 <- Sys.time()
+save(m_doyp12, file = "output/agave-multiyr-models/doyp12.RData")
+end_doyp12 - start_doyp12
+
+# DOY model with spring temperatures
+start_doyspt <- Sys.time()
+m_doyspt <- ordbetareg(prop ~ doyz + I(doyz^2) + temp_spz + (1|id),
+                       data = sif2,
+                       control = list(adapt_delta = 0.99),
+                       iter = 4000, cores = 4, chains = 4)
+end_doyspt <- Sys.time()
+save(m_doyspt, file = "output/agave-multiyr-models/doyspt.RData")
+end_doyspt - start_doyspt
+
+# DOY model with winter temperatures
+start_doywit <- Sys.time()
+m_doywit <- ordbetareg(prop ~ doyz + I(doyz^2) + tmin_wiz + (1|id),
+                       data = sif2,
+                       control = list(adapt_delta = 0.99),
+                       iter = 4000, cores = 4, chains = 4)
+end_doywit <- Sys.time()
+save(m_doywit, file = "output/agave-multiyr-models/doywit.RData")
+end_doywit - start_doywit
+
+# DOY model with random year effects
+start_doyfyr <- Sys.time()
+m_doyfyr <- ordbetareg(prop ~ doyz + doyz2 + (1 + doyz + doyz2|fyr) + (1|id),
+                       data = sif2,
+                       control = list(adapt_delta = 0.99),
+                       iter = 4000, cores = 4, chains = 4)
+end_doyfyr <- Sys.time()
+save(m_doyfyr, file = "output/agave-multiyr-models/doyfyr.RData")
+end_doyfyr - start_doyfyr
+
+# DOY model with random year effects, cubic term?
+sif2 <- sif2 %>%
+  mutate(doyz3 = doyz ^ 3)
+
+start_doyfyr3 <- Sys.time()
+m_doyfyr3 <- ordbetareg(prop ~ doyz + doyz2 + doyz3 + (1 + doyz + doyz2 + doyz3|fyr) + (1|id),
+                       data = sif2,
+                       control = list(adapt_delta = 0.99),
+                       iter = 4000, cores = 4, chains = 4)
+end_doyfyr3 <- Sys.time()
+save(m_doyfyr3, file = "output/agave-multiyr-models/doyfyr3.RData")
+end_doyfyr3 - start_doyfyr3
+
+# GDD model, assuming effects of gdd are the same each year
+start_gdd <- Sys.time()
+m_gdd <- ordbetareg(prop ~ agdd0z + I(agdd0z^2) + (1|id),
+                    data = sif2,
+                    control = list(adapt_delta = 0.99),
+                    iter = 4000, cores = 4, chains = 4)
+end_gdd <- Sys.time()
+save(m_gdd, file = "output/agave-multiyr-models/gdd.RData")
+end_gdd - start_gdd
+
+# GDD model, random yearly intercepts
+start_gddREi <- Sys.time()
+m_gddREi <- ordbetareg(prop ~ agdd0z + I(agdd0z^2) + (1|fyr) + (1|id),
+                       data = sif2,
+                       control = list(adapt_delta = 0.99),
+                       iter = 4000, cores = 4, chains = 4)
+end_gddREi <- Sys.time()
+save(m_gddREi, file = "output/agave-multiyr-models/gddREi.RData")
+end_gddREi - start_gddREi
+
+# GDD model, random yearly intercepts and slopes
+start_gddREis <- Sys.time()
+m_gddREis <- ordbetareg(prop ~ agdd0z + agdd0z2 + (1 + agdd0z + agdd0z2|fyr) + (1|id),
+                        data = sif2,
+                        control = list(adapt_delta = 0.99),
+                        iter = 4000, cores = 4, chains = 4)
+end_gddREis <- Sys.time()
+save(m_gddREis, file = "output/agave-multiyr-models/gddREis.RData")
+end_gddREis - start_gddREis
+#
 
 # Load models if they've already been run:
 load("output/agave-multiyr-models/doyp3.RData")
@@ -720,6 +781,7 @@ load("output/agave-multiyr-models/doyp6.RData")
 load("output/agave-multiyr-models/doyp9.RData")
 load("output/agave-multiyr-models/doyp12.RData")
 load("output/agave-multiyr-models/doyfyr.RData")
+load("output/agave-multiyr-models/doyfyr3.RData")
 load("output/agave-multiyr-models/doyspt.RData")
 load("output/agave-multiyr-models/doywit.RData")
 load("output/agave-multiyr-models/gdd.RData")
@@ -734,11 +796,12 @@ loo_doyp12 <- loo(m_doyp12)
 loo_doyspt <- loo(m_doyspt)
 loo_doywit <- loo(m_doywit)
 loo_doyfyr <- loo(m_doyfyr)
+loo_doyfyr3 <- loo(m_doyfyr3)
 loo_gdd <- loo(m_gdd)
 loo_gddREi <- loo(m_gddREi)
 loo_gddREis <- loo(m_gddREis)
 loo_compare(loo_doyp3, loo_doyp6, loo_doyp9, loo_doyp12, 
-            loo_doyspt, loo_doywit, loo_doyfyr,
+            loo_doyspt, loo_doywit, loo_doyfyr, loo_doyfyr3,
             loo_gdd, loo_gddREi, loo_gddREis)
 # DOY with random slopes and intercepts by year is best, followed by GDD model 
 # with random slopes and intercepts by year.
@@ -748,11 +811,19 @@ loo_compare(loo_doyp3, loo_doyp6, loo_doyp9, loo_doyp12,
 
 # Expected proportion open by year, ignoring individual REs
 doyz <- seq(min(sif2$doyz), max(sif2$doyz), length = 100)
+doy_eachyr <- sif2 %>%
+  group_by(fyr) %>%
+  summarize(first = min(day_of_year),
+            last = max(day_of_year)) %>%
+  data.frame()
 
 newdata <- expand_grid(doyz = doyz,
                        fyr = levels(sif2$fyr)) %>%
   mutate(doyz2 = doyz * doyz) %>%
-  mutate(doy = round(doyz * sd(sif2$day_of_year) + mean(sif2$day_of_year))) %>%
+  mutate(doy = doyz * sd(sif2$day_of_year) + mean(sif2$day_of_year)) %>%
+  left_join(doy_eachyr, by = "fyr") %>%
+  filter(doy >= first & doy <= last) %>%
+  select(-c(first, last)) %>%
   data.frame()
 
 doy_yr <- m_doyfyr %>%

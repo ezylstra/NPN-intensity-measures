@@ -146,8 +146,6 @@ si <- si %>%
 # remove plant-year combos with no observations in phase
 # remove plant-year combos with no observations with intensity values
 # remove plant-year combos with < 5 observations between days 100 and 300
-# remove plant-year combos when max interval between days 120 and 220 is >21 days
-#### May want to revisit this interval length filter
 
 # Summarize amount and quality of information for each plant, year
 pl_yr <- si %>%
@@ -184,6 +182,7 @@ pl_yr <- pl_yr %>%
 
 # Try 2 different filters...
 pl_yr <- pl_yr %>%
+  # Filter1 = remove plant-yrs that have an interval > 21 days after day 120
   mutate(remove1 = case_when(
     n_inphase == 0 ~ 1,
     n_intvalue == 0 ~ 1,
@@ -191,38 +190,18 @@ pl_yr <- pl_yr %>%
     max_int_after120 > 21 ~ 1,
     .default = 0
   )) %>%
+  # Filter2 = remove plant-yrs that have < 5 observations between days 120 & 220
   mutate(remove2 = case_when(
     n_inphase == 0 ~ 1,
     n_intvalue == 0 ~ 1,
     nobs_100_300 < 5 ~ 1,
     nobs_120_220 < 5 ~ 1,
-    # max_int_after120 > 21 ~ 1,
     .default = 0
   ))
 
 si <- si %>%
   left_join(select(pl_yr, individual_id, yr, remove1, remove2),
             by = c("individual_id", "yr")) 
-
-# What's left if I use each filter?
-si %>%
-  filter(remove1 == 0) %>%
-  group_by(yr) %>%
-  summarize(n_obs = n(),
-            n_sites = n_distinct(site_id),
-            n_plants = n_distinct(individual_id),
-            n_plantyrs = n_distinct(paste0(individual_id, "_", yr)),
-            obs_per_plant = n_obs / n_plants) %>%
-  data.frame()
-si %>%
-  filter(remove2 == 0) %>%
-  group_by(yr) %>%
-  summarize(n_obs = n(),
-            n_sites = n_distinct(site_id),
-            n_plants = n_distinct(individual_id),
-            n_plantyrs = n_distinct(paste0(individual_id, "_", yr)),
-            obs_per_plant = n_obs / n_plants) %>%
-  data.frame()
 
 # Remove data from 2017 (just one plant; all other years 17-55 plants)
 si <- filter(si, yr != 2017)
@@ -277,7 +256,7 @@ if (!file.exists(png_name)) {
 # Look at individual curves for a given year
 # si %>%
 #   filter(remove2 == 0) %>%
-#   filter(yr == 2023) %>%
+#   filter(yr == 2019) %>%
 #   ggplot(aes(x = day_of_year, y = intensity_midpoint)) +
 #   geom_line() +
 #   facet_wrap(~ individual_id) +
@@ -345,14 +324,44 @@ sif <- sif %>%
   mutate(intensity = ifelse(day_of_year > last_yes, NA, intensity_midpoint)) %>%
   mutate(intensity = ifelse(remove_gap == 1, NA, intensity))
 
-# Check:
+# What's left if I use filter1 or filter2?
+sif %>%
+  filter(remove1 == 0) %>%
+  group_by(yr) %>%
+  summarize(n_obs = n(),
+            n_sites = n_distinct(site_id),
+            n_plants = n_distinct(individual_id),
+            n_plantyrs = n_distinct(paste0(individual_id, "_", yr)),
+            obs_per_plant = n_obs / n_plants) %>%
+  data.frame()
 sif %>%
   filter(remove2 == 0) %>%
-  filter(yr == 2018) %>%
-  ggplot(aes(x = day_of_year, y = intensity)) +
-  geom_line() +
-  facet_wrap(~ individual_id) +
-  theme_bw()
+  group_by(yr) %>%
+  summarize(n_obs = n(),
+            n_sites = n_distinct(site_id),
+            n_plants = n_distinct(individual_id),
+            n_plantyrs = n_distinct(paste0(individual_id, "_", yr)),
+            obs_per_plant = n_obs / n_plants) %>%
+  data.frame()
+
+# Checks:
+  sif %>%
+    filter(remove1 == 0) %>%
+    filter(yr == 2018) %>%
+    ggplot(aes(x = day_of_year, y = intensity)) +
+    geom_line() +
+    facet_wrap(~ individual_id) +
+    theme_bw()
+  
+  sif %>% filter(yr == 2018 & remove1 == 0) %>% pull(individual_id) %>% unique() %>% sort()
+  sif %>% filter(yr == 2018 & remove2 == 0) %>% pull(individual_id) %>% unique() %>% sort()
+  
+  filter(sif, yr == 2018 & individual_id == 171660) %>%
+    select(observation_date, day_of_year, phenophase_status, interval,
+           intensity, remove1, remove2)
+
+# Note that after converting some intensity values from 0 to NA, we may not
+# have >= 5 non-NA observations between days 100 and 300 for each plant-yr.
 
 # Convert intensities to proportions and remove NAs
 sif <- sif %>%
@@ -427,7 +436,7 @@ weather <- weather %>%
   ungroup() %>%
   data.frame()
 
-# What do GDD values compare among years?
+# How do GDD values compare among years?
 gdd_annual <- weather %>%
   group_by(yr) %>%
   summarize(gdd0_100 = mean(agdd0[doy == 100]),
@@ -445,10 +454,10 @@ gdd_annual <- weather %>%
   mutate(doy = as.numeric(doy),
          yr = as.factor(yr)) %>%
   data.frame()
-ggplot(data = filter(gdd_annual, doy < 175), 
+ggplot(data = filter(gdd_annual, gdd == "gdd0"), 
        aes(x = doy, y = value)) +
-  geom_line(aes(color = yr)) + 
-  facet_grid(gdd ~ ., scales = "free_y")
+  geom_line(aes(color = yr)) 
+  # + facet_grid(gdd ~ ., scales = "free_y")
 
 # Calculate seasonal variables
 weathermonths <- weather %>%
@@ -775,7 +784,147 @@ save(m_gddREis, file = "output/agave-multiyr-models/gddREis.RData")
 end_gddREis - start_gddREis
 #
 
+# Run models for multiple years (different filter) ----------------------------#
+
+# Use one of the filters, create factor variables, and standardize variables
+sif1 <- sif %>%
+  filter(remove1 == 0) %>%
+  mutate(doyz = (day_of_year - mean(day_of_year)) / sd(day_of_year),
+         doyz2 = doyz * doyz,
+         agdd0z = (agdd0 - mean(agdd0)) / sd(agdd0),
+         agdd0z2 = agdd0z * agdd0z,
+         agdd10z = (agdd10 - mean(agdd10)) / sd(agdd10),
+         tmin_wiz = (tmin_wi - mean(tmin_wi)) / sd(tmin_wi),
+         ppt_3mz = (ppt_3m - mean(ppt_3m)) / sd(ppt_3m),
+         ppt_6mz = (ppt_6m - mean(ppt_6m)) / sd(ppt_6m),
+         ppt_9mz = (ppt_9m - mean(ppt_9m)) / sd(ppt_9m),
+         ppt_12mz = (ppt_12m - mean(ppt_12m)) / sd(ppt_12m),
+         temp_spz = (temp_sp - mean(temp_sp)) / sd(temp_sp)) %>%
+  mutate(id = factor(individual_id),
+         fyr = factor(yr),
+         site = factor(site_id))
+
+# DOY model with spring (3-month) precipitation
+start_doyp3_1 <- Sys.time()
+m_doyp3_1 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_3mz + (1|id),
+                        data = sif1,
+                        control = list(adapt_delta = 0.99),
+                        iter = 4000, cores = 4, chains = 4)
+end_doyp3_1 <- Sys.time()
+save(m_doyp3_1, file = "output/agave-multiyr-models/doyp3_1.RData")
+end_doyp3_1 - start_doyp3_1
+
+# DOY model with 6-month precipitation
+start_doyp6_1 <- Sys.time()
+m_doyp6_1 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_6mz + (1|id),
+                        data = sif1,
+                        control = list(adapt_delta = 0.99),
+                        iter = 4000, cores = 4, chains = 4)
+end_doyp6_1 <- Sys.time()
+save(m_doyp6_1, file = "output/agave-multiyr-models/doyp6_1.RData")
+end_doyp6_1 - start_doyp6_1
+
+# DOY model with 9-month precipitation
+start_doyp9_1 <- Sys.time()
+m_doyp9_1 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_9mz + (1|id),
+                        data = sif1,
+                        control = list(adapt_delta = 0.99),
+                        iter = 4000, cores = 4, chains = 4)
+end_doyp9_1 <- Sys.time()
+save(m_doyp9_1, file = "output/agave-multiyr-models/doyp9_1.RData")
+end_doyp9_1 - start_doyp9_1
+
+# DOY model with 12-month precipitation
+start_doyp12_1 <- Sys.time()
+m_doyp12_1 <- ordbetareg(prop ~ doyz + I(doyz^2) + ppt_12mz + (1|id),
+                         data = sif1,
+                         control = list(adapt_delta = 0.99),
+                         iter = 4000, cores = 4, chains = 4)
+end_doyp12_1 <- Sys.time()
+save(m_doyp12_1, file = "output/agave-multiyr-models/doyp12_1.RData")
+end_doyp12_1 - start_doyp12_1
+
+# DOY model with spring temperatures
+start_doyspt_1 <- Sys.time()
+m_doyspt_1 <- ordbetareg(prop ~ doyz + I(doyz^2) + temp_spz + (1|id),
+                         data = sif1,
+                         control = list(adapt_delta = 0.99),
+                         iter = 4000, cores = 4, chains = 4)
+end_doyspt_1 <- Sys.time()
+save(m_doyspt_1, file = "output/agave-multiyr-models/doyspt_1.RData")
+end_doyspt_1 - start_doyspt_1
+
+# DOY model with winter temperatures
+start_doywit_1 <- Sys.time()
+m_doywit_1 <- ordbetareg(prop ~ doyz + I(doyz^2) + tmin_wiz + (1|id),
+                         data = sif1,
+                         control = list(adapt_delta = 0.99),
+                         iter = 4000, cores = 4, chains = 4)
+end_doywit_1 <- Sys.time()
+save(m_doywit_1, file = "output/agave-multiyr-models/doywit_1.RData")
+end_doywit_1 - start_doywit_1
+
+# DOY model with random year effects
+start_doyfyr_1 <- Sys.time()
+m_doyfyr_1 <- ordbetareg(prop ~ doyz + doyz2 + (1 + doyz + doyz2|fyr) + (1|id),
+                         data = sif1,
+                         control = list(adapt_delta = 0.99),
+                         iter = 4000, cores = 4, chains = 4)
+end_doyfyr_1 <- Sys.time()
+save(m_doyfyr_1, file = "output/agave-multiyr-models/doyfyr_1.RData")
+end_doyfyr_1 - start_doyfyr_1
+
+# DOY model with random year effects, cubic term?
+sif1 <- sif1 %>%
+  mutate(doyz3 = doyz ^ 3)
+
+start_doyfyr3_1 <- Sys.time()
+m_doyfyr3_1 <- ordbetareg(prop ~ doyz + doyz2 + doyz3 + (1 + doyz + doyz2 + doyz3|fyr) + (1|id),
+                          data = sif1,
+                          control = list(adapt_delta = 0.99),
+                          iter = 4000, cores = 4, chains = 4)
+end_doyfyr3_1 <- Sys.time()
+save(m_doyfyr3_1, file = "output/agave-multiyr-models/doyfyr3_1.RData")
+end_doyfyr3_1 - start_doyfyr3_1
+
+# GDD model, assuming effects of gdd are the same each year
+start_gdd_1 <- Sys.time()
+m_gdd_1 <- ordbetareg(prop ~ agdd0z + I(agdd0z^2) + (1|id),
+                      data = sif1,
+                      control = list(adapt_delta = 0.99),
+                      iter = 4000, cores = 4, chains = 4)
+end_gdd_1 <- Sys.time()
+save(m_gdd_1, file = "output/agave-multiyr-models/gdd_1.RData")
+end_gdd_1 - start_gdd_1
+
+# GDD model, random yearly intercepts
+start_gddREi_1 <- Sys.time()
+m_gddREi_1 <- ordbetareg(prop ~ agdd0z + I(agdd0z^2) + (1|fyr) + (1|id),
+                         data = sif1,
+                         control = list(adapt_delta = 0.99),
+                         iter = 4000, cores = 4, chains = 4)
+end_gddREi_1 <- Sys.time()
+save(m_gddREi_1, file = "output/agave-multiyr-models/gddREi_1.RData")
+end_gddREi_1 - start_gddREi_1
+
+# GDD model, random yearly intercepts and slopes
+start_gddREis_1 <- Sys.time()
+m_gddREis_1 <- ordbetareg(prop ~ agdd0z + agdd0z2 + (1 + agdd0z + agdd0z2|fyr) + (1|id),
+                          data = sif1,
+                          control = list(adapt_delta = 0.99),
+                          iter = 4000, cores = 4, chains = 4)
+end_gddREis_1 <- Sys.time()
+save(m_gddREis_1, file = "output/agave-multiyr-models/gddREis_1.RData")
+end_gddREis_1 - start_gddREis_1
+#
+
+
+
+
+
+
 # Load models if they've already been run:
+# Models with filter #2 (remove2 == 1)
 load("output/agave-multiyr-models/doyp3.RData")
 load("output/agave-multiyr-models/doyp6.RData")
 load("output/agave-multiyr-models/doyp9.RData")
@@ -803,94 +952,151 @@ loo_gddREis <- loo(m_gddREis)
 loo_compare(loo_doyp3, loo_doyp6, loo_doyp9, loo_doyp12, 
             loo_doyspt, loo_doywit, loo_doyfyr, loo_doyfyr3,
             loo_gdd, loo_gddREi, loo_gddREis)
-# DOY with random slopes and intercepts by year is best, followed by GDD model 
-# with random slopes and intercepts by year.
+# DOY with cubic terms and random slopes and intercepts by year is best, 
+# followed by DOY model without a cubic term and then a GDD model with random 
+# slopes and intercepts by year.
 
+# Visualize results from fyr (quadratic) model:
+  # Expected proportion open by year, ignoring individual REs
+  doyz <- seq(min(sif2$doyz), max(sif2$doyz), length = 100)
+  doy_eachyr <- sif2 %>%
+    group_by(fyr) %>%
+    summarize(first = min(day_of_year),
+              last = max(day_of_year)) %>%
+    data.frame()
+  
+  newdata <- expand_grid(doyz = doyz,
+                         fyr = levels(sif2$fyr)) %>%
+    mutate(doyz2 = doyz * doyz) %>%
+    mutate(doy = doyz * sd(sif2$day_of_year) + mean(sif2$day_of_year)) %>%
+    left_join(doy_eachyr, by = "fyr") %>%
+    filter(doy >= first & doy <= last) %>%
+    select(-c(first, last)) %>%
+    data.frame()
+  
+  doy_yr <- m_doyfyr %>%
+    epred_draws(newdata = newdata,
+                re_formula = ~ (1 + doyz + doyz2|fyr)) 
+  plot_doy_yr <- ggplot(filter(doy_yr, doy >= 150), 
+                        aes(x = doy, y = .epred)) +
+    stat_lineribbon(aes(color = fyr, fill = after_scale(alpha(color, 0.2))), 
+                    .width = 0.80) +
+    labs(x = "Day of year", y = "Predicted proportion of flowers open (%)", 
+         color = "Year",
+         fill = "Year", 
+         title = "By year, correlated intercepts/slopes") +
+    theme_bw() +
+    theme(legend.position = "bottom")
+  plot_doy_yr
 
-# Visualize results from highest-ranked model
+# Visualize results from fyr3 (cubic) model:
+  newdata3 <- expand_grid(doyz = doyz,
+                         fyr = levels(sif2$fyr)) %>%
+    mutate(doyz2 = doyz * doyz) %>%
+    mutate(doyz3 = doyz * doyz * doyz) %>%
+    mutate(doy = doyz * sd(sif2$day_of_year) + mean(sif2$day_of_year)) %>%
+    left_join(doy_eachyr, by = "fyr") %>%
+    filter(doy >= first & doy <= last) %>%
+    select(-c(first, last)) %>%
+    data.frame()
+  
+  doy_yr3 <- m_doyfyr3 %>%
+    epred_draws(newdata = newdata3,
+                re_formula = ~ (1 + doyz + doyz2 + doyz3|fyr)) 
+  plot_doy_yr3 <- ggplot(filter(doy_yr3, doy >= 150), 
+                        aes(x = doy, y = .epred)) +
+    stat_lineribbon(aes(color = fyr, fill = after_scale(alpha(color, 0.2))), 
+                    .width = 0.80) +
+    labs(x = "Day of year", y = "Predicted proportion of flowers open (%)", 
+         color = "Year",
+         fill = "Year", 
+         title = "By year, correlated intercepts/slopes") +
+    theme_bw() +
+    theme(legend.position = "bottom")
+  plot_doy_yr3
 
-# Expected proportion open by year, ignoring individual REs
-doyz <- seq(min(sif2$doyz), max(sif2$doyz), length = 100)
-doy_eachyr <- sif2 %>%
-  group_by(fyr) %>%
-  summarize(first = min(day_of_year),
-            last = max(day_of_year)) %>%
-  data.frame()
+# Visualize results from gddREis model
+  agdd0z <- seq(min(sif2$agdd0z), max(sif2$agdd0z), length = 100)
+  agdd0_eachyr <- sif2 %>%
+    group_by(fyr) %>%
+    summarize(lowest = min(agdd0),
+              highest = max(agdd0)) %>%
+    data.frame()
+  
+  newdata <- expand_grid(agdd0z = agdd0z,
+                         fyr = levels(sif2$fyr)) %>%
+    mutate(agdd0z2 = agdd0z * agdd0z) %>%
+    mutate(agdd0 = agdd0z * sd(sif2$agdd0) + mean(sif2$agdd0)) %>%
+    left_join(agdd0_eachyr, by = "fyr") %>%
+    filter(agdd0 >= lowest & agdd0 <= highest) %>%
+    data.frame()
 
-newdata <- expand_grid(doyz = doyz,
-                       fyr = levels(sif2$fyr)) %>%
-  mutate(doyz2 = doyz * doyz) %>%
-  mutate(doy = doyz * sd(sif2$day_of_year) + mean(sif2$day_of_year)) %>%
-  left_join(doy_eachyr, by = "fyr") %>%
-  filter(doy >= first & doy <= last) %>%
-  select(-c(first, last)) %>%
-  data.frame()
+  gdd_yr <- m_gddREis %>%
+    epred_draws(newdata = newdata,
+                re_formula = ~ (1 + agdd0z + agdd0z2|fyr)) 
+  plot_gdd_yr <- ggplot(gdd_yr, 
+                        aes(x = agdd0, y = .epred)) +
+    stat_lineribbon(aes(color = fyr, fill = after_scale(alpha(color, 0.2))), 
+                    .width = 0.80) +
+    labs(x = "AGDD (base 0)", y = "Predicted proportion of flowers open (%)", 
+         color = "Year",
+         fill = "Year", 
+         title = "By year, correlated intercepts/slopes") +
+    theme_bw() +
+    theme(legend.position = "bottom")
+  plot_gdd_yr
+  
+  # Ignoring random year and individual effects
+  newdata_gm <- data.frame(agdd0z = agdd0z) %>%
+    mutate(agdd0z2 = agdd0z * agdd0z) %>%
+    mutate(agdd0 = agdd0z * sd(sif2$agdd0) + mean(sif2$agdd0)) %>%
+    data.frame()
+  
+  gdd_gm <- m_gddREis %>%
+    epred_draws(newdata = newdata_gm,
+                re_formula = NA) 
+  plot_gdd_gm <- ggplot(gdd_gm, 
+                        aes(x = agdd0, y = .epred)) +
+    stat_lineribbon() +
+    scale_fill_brewer(palette = "Blues") +
+    labs(x = "AGDD (base 0)", y = "Predicted proportion of flowers open (%)", 
+         fill = "Credible interval", 
+         title = "Ignoring random year, plant effects") +
+    theme_bw() +
+    theme(legend.position = "bottom")
+  plot_gdd_gm
 
-doy_yr <- m_doyfyr %>%
-  epred_draws(newdata = newdata,
-              re_formula = ~ (1 + doyz + doyz2|fyr)) 
-plot_doy_yr <- ggplot(doy_yr, 
-                      aes(x = doy, y = .epred)) +
-  stat_lineribbon(aes(color = fyr, fill = after_scale(alpha(color, 0.2))), 
-                  .width = 0.80) +
-  labs(x = "Day of year", y = "Predicted proportion of flowers open (%)", 
-       color = "Year",
-       fill = "Year", 
-       title = "By year, correlated intercepts/slopes") +
-  theme_bw() +
-  theme(legend.position = "bottom")
-plot_doy_yr
-# ggsave("output/agave-multiyr-models/doy-fyr.png",
-#        plot_doy_yr,
-#        width = 6.5,
-#        height = 4,
-#        units = "in")
-
-plot_doy_yr2 <- ggplot(filter(doy_yr, doy >= 175), 
-                       aes(x = doy, y = .epred)) +
-  stat_lineribbon() +
-  scale_fill_brewer(palette = "Blues") +
-  # Add a horizontal line for easier comparison
-  geom_hline(yintercept = 0.25, linetype = "dotted") +
-  facet_wrap(~ fyr, ncol = 2) +
-  labs(x = "Day of year", y = "Predicted proportion of flowers open (%)", 
-       fill = "Credible interval", 
-       title = "By year, correlated intercepts/slopes") +
-  theme_bw() +
-  theme(legend.position = "bottom")
-plot_doy_yr2
-# ggsave("output/agave-multiyr-models/doy-fyr-faceted.png",
-#        plot_doy_yr2,
-#        width = 6.5,
-#        height = 6,
-#        units = "in")
-
-# Visualize results from highest-ranked GDD model
-
-agdd0z <- seq(min(sif2$agdd0z), max(sif2$agdd0z), length = 100)
-
-newdata <- expand_grid(agdd0z = agdd0z,
-                       fyr = levels(sif2$fyr)) %>%
-  mutate(agdd0z2 = agdd0z * agdd0z) %>%
-  mutate(agdd0 = agdd0z * sd(sif2$agdd0) + mean(sif2$agdd0)) %>%
-  data.frame()
-
-gdd_yr <- m_gddREis %>%
-  epred_draws(newdata = newdata,
-              re_formula = ~ (1 + agdd0z + agdd0z2|fyr)) 
-plot_gdd_yr <- ggplot(gdd_yr, 
-                      aes(x = agdd0, y = .epred)) +
-  stat_lineribbon(aes(color = fyr, fill = after_scale(alpha(color, 0.2))), 
-                  .width = 0.80) +
-  labs(x = "AGDD (base 0)", y = "Predicted proportion of flowers open (%)", 
-       color = "Year",
-       fill = "Year", 
-       title = "By year, correlated intercepts/slopes") +
-  theme_bw() +
-  theme(legend.position = "bottom")
-plot_gdd_yr
-# ggsave("output/agave-multiyr-models/gdd-fyr.png",
-#        plot_gdd_yr,
-#        width = 6.5,
-#        height = 4,
-#        units = "in")
+  load("output/agave-multiyr-models/doyfyr_1.RData")
+  
+# Visualize results from fyr (quadratic) model - filter 1:
+  # Expected proportion open by year, ignoring individual REs
+  doyz_1 <- seq(min(sif1$doyz), max(sif1$doyz), length = 100)
+  doy_eachyr_1 <- sif1 %>%
+    group_by(fyr) %>%
+    summarize(first = min(day_of_year),
+              last = max(day_of_year)) %>%
+    data.frame()
+  
+  newdata_1 <- expand_grid(doyz = doyz_1,
+                           fyr = levels(sif1$fyr)) %>%
+    mutate(doyz2 = doyz * doyz) %>%
+    mutate(doy = doyz * sd(sif1$day_of_year) + mean(sif1$day_of_year)) %>%
+    left_join(doy_eachyr_1, by = "fyr") %>%
+    filter(doy >= first & doy <= last) %>%
+    select(-c(first, last)) %>%
+    data.frame()
+  
+  doy_yr_1 <- m_doyfyr_1 %>%
+    epred_draws(newdata = newdata_1,
+                re_formula = ~ (1 + doyz + doyz2|fyr)) 
+  plot_doy_yr_1 <- ggplot(filter(doy_yr_1, doy >= 150), 
+                          aes(x = doy, y = .epred)) +
+    stat_lineribbon(aes(color = fyr, fill = after_scale(alpha(color, 0.2))), 
+                    .width = 0.80) +
+    labs(x = "Day of year", y = "Predicted proportion of flowers open (%)", 
+         color = "Year",
+         fill = "Year", 
+         title = "Filter1: By year, correlated intercepts/slopes") +
+    theme_bw() +
+    theme(legend.position = "bottom")
+  plot_doy_yr_1  

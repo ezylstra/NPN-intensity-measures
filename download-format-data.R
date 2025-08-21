@@ -752,7 +752,7 @@ si <- si %>%
   filter(intensity_category_id %in% int_2024 | is.na(intensity_category_id))
   # Merge phenophase and intensity information with si
 si <- si %>%
-  select(-c(observation_id, observedby_person_id)) %>%
+  select(-observation_id) %>%
   left_join(ph_merge, by = "phenophase_id") %>%
   left_join(ivalues, by = c("intensity_category_id", "intensity_value"))
   # Create a new column with intensity labels (factor)

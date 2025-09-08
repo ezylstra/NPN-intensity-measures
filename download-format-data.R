@@ -2,7 +2,7 @@
 # consistently
 
 # ER Zylstra
-# 29 July 2025
+# 8 September 2025
 
 library(dplyr)
 library(stringr)
@@ -791,4 +791,88 @@ si_file <- list.files(path = "npn-data",
                       pattern = "si-agave",
                       full.names = TRUE)
 file.remove(si_file)
+
+# Download data for eastern redbud --------------------------------------------#
+
+redbud_spp <- npn_species() %>%
+  data.frame() %>%
+  filter(common_name == "eastern redbud")
+
+intensity_file <- list.files(path = "npn-data",
+                             pattern = "intensity-redbud",
+                             full.names = TRUE)
+
+# Download, but only if an intensity csv doesn't exist
+if (length(intensity_file) == 0) {
+  rb_dl <- npn_download_status_data(
+    request_source = "erinz",
+    years = 2009:2025, 
+    species_ids = redbud_spp$species_id,
+    additional_fields = c("site_name",
+                          "observedby_person_id")
+  )
+}
+
+rb <- rb_dl %>%
+  # Create yr column
+  mutate(yr = year(observation_date)) %>%
+  # Convert html coding of ">" to symbol
+  mutate(phenophase_description = str_replace_all(phenophase_description,
+                                                  "&gt;", ">")) %>%
+  # Remove whitespaces in common_name column
+  mutate(common_name = str_trim(common_name))
+  
+# Filter out phenophases or intensity categories that weren't used in 2024
+# or phenophases that don't have intensity categories associated with them
+# (for now, keeping phenophases that could have intensity categories, but
+# observers didn't report intensity values)
+rb <- rb %>%
+  filter(phenophase_id %in% ph_2024) %>%
+  filter(intensity_category_id %in% int_2024 | is.na(intensity_category_id))
+# Merge phenophase and intensity information with sir
+rb <- rb %>%
+  select(-observation_id) %>%
+  left_join(ph_merge, by = "phenophase_id") %>%
+  left_join(ivalues, by = c("intensity_category_id", "intensity_value"))
+# Create a new column with intensity labels (factor)
+rb <- rb %>%
+  # Remove anything in parentheses in intensity name
+  mutate(intensity_label = str_replace(intensity_name, " \\s*\\([^\\)]+\\)", "")) %>%
+  # Remove the word " present" from intensity name
+  mutate(intensity_label = str_remove(intensity_label, " present")) %>%
+  # Remove the word "Potential" from intensity name
+  mutate(intensity_label = str_remove(intensity_label, "Potential ")) %>%
+  # Remove the word " percentage" from intensity name
+  mutate(intensity_label = str_remove(intensity_label, " percentage")) %>%
+  # Remove "Recent " from intensity name
+  mutate(intensity_label = str_remove(intensity_label, "Recent ")) %>%
+  # Replace " or " with "/" in intensity name
+  mutate(intensity_label = str_replace(intensity_label, " or ", "/")) %>%
+  # Add "No. " in front or "(%)" at the end
+  mutate(intensity_label = case_when(
+    intensity_type == "number" ~ paste0("No. ", str_to_lower(intensity_label)),
+    intensity_type == "percent" ~ paste0(str_to_sentence(intensity_label), " (%)"),
+    .default = intensity_label
+  )) %>%
+  arrange(class_id) %>%
+  mutate(intensity_label = factor(intensity_label,
+                                  levels = unique(intensity_label)))
+
+min_yr <- min(rb$yr)
+max_yr <- max(rb$yr)
+
+# This file is too big - break up and save separate years
+rb_yrs <- sort(unique(rb$yr))
+for (rb_yr in rb_yrs) {
+  filter(rb, yr == rb_yr) %>%
+    write.csv(paste0("npn-data/intensity-redbud/intensity-redbud-", 
+                     rb_yr, ".csv"), row.names = FALSE)
+}
+
+
+# Save filtered and formatted data to file
+new_filename <- paste0("npn-data/intensity-redbud-", min_yr, "-", max_yr, ".csv")
+write.csv(rb, new_filename, row.names = FALSE)
+
+
 

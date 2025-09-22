@@ -268,8 +268,6 @@ flowersw %>%
 # Looking at weekly values averaged across individuals, this seems like less of 
 # a problem...
 
-
-
 # What about looking at data for an individual?
 count(filter(flowersw, yr == 2022), id) %>% arrange(desc(n)) %>% head(10)
 flowersw %>%
@@ -286,3 +284,118 @@ flowersw %>%
   geom_line() +
   facet_grid(type ~ ., scales = "free_y")
 # %open stays high as number of flowers drops off
+
+# Calculate estimated number of open flowers ----------------------------------#
+
+# Remove observations where either intensity value is NA, then calculate
+# (rounding values up to nearest integer)
+flowersw <- flowersw %>%
+  filter(!is.na(intensity_flowers) & !is.na(intensity_open)) %>%
+  mutate(nopen = ceiling(intensity_flowers * intensity_open / 100))
+
+# A bunch of filtering (WILL NEED TO REVIEW):
+  # Remove observations past DOY 180
+  # Remove plant-year combinations with <2 non-zero counts
+  # Remove plant-year combinations with no observations before DOY 100
+  # Remove plant-year combinations that did not start and end with 0 counts
+of <- flowersw %>%
+  filter(doy <= 180) %>%
+  group_by(id, yr) %>%
+  mutate(nonzero_counts = sum(nopen > 0),
+         min_doy = min(doy),
+         start0 = ifelse(nopen[1] == 0, 1, 0),
+         end0 = ifelse(last(nopen) == 0, 1, 0)) %>%
+  ungroup() %>% 
+  filter(nonzero_counts > 1) %>% 
+  filter(min_doy <= 100) %>%
+  filter(start0 == 1 & end0 == 1) %>%
+  data.frame()
+
+# Basic summaries/visualizations of open flower abundance data ----------------#
+
+# What do the values look like?
+count(of, nopen)
+# How much data do we have each year?
+of %>%
+  group_by(yr) %>%
+  summarize(nplants = n_distinct(id),
+            nobs = n()) %>%
+  mutate(nobsperplant = nobs / nplants) %>%
+  data.frame()
+# 2016-2025 look pretty good.
+
+# Look at data from 2016 (first year with >= 10 plants)
+ggplot(filter(of, yr == 2016), aes(x = doy, y = nopen)) +
+  geom_line() +
+  geom_point(color = "blue") +
+  facet_wrap(~id)
+
+# There are massive differences in max counts among plants within and across 
+# years. 
+
+# Look at variation in max counts among years for a given plant
+of %>%
+  group_by(id) %>%
+  summarize(nyrs = n_distinct(yr)) %>%
+  arrange(desc(nyrs)) %>%
+  head(20)
+
+plant <- 232170 # 25365
+of %>%
+  filter(id == plant) %>%
+  group_by(yr) %>%
+  summarize(yrmax = max(nopen)) %>%
+  data.frame()
+of %>%
+  filter(id == plant) %>%
+  ggplot(aes(x = doy, y = nopen)) +
+  geom_line() +
+  geom_point(color = "steelblue3") +
+  facet_wrap(~yr)
+# Occasionally, max values increase over time, potentially indicating the plant
+# was small/young in first years (eg, 46192). But most often, max values vary 
+# with no trend.
+
+# Modeling variation in max annual counts -------------------------------------# 
+
+# Merge with site information, and limit data to 2016-2025
+ofmax <- of %>%
+  group_by(site_id, id, yr) %>%
+  summarize(nobs = n(),
+            maxcount = max(nopen),
+            .groups = "keep") %>%
+  data.frame() %>%
+  left_join(select(sites, site_id, state, latitude, longitude), 
+            by = "site_id") %>%
+  filter(yr > 2015) %>%
+  mutate(fyr = factor(yr))
+  
+# Want to get elevation
+# Want to get some kind of weather variables (relating to forcing/chilling/precip?)
+
+# Doesn't look like there are obvious differences among years across plants.
+# 2020 and 2022 had lower max counts, but they're not hugely different.
+ofmax %>%
+  group_by(yr) %>%
+  summarize(nplants = n_distinct(id),
+            nobs = n(),
+            of_mean = round(mean(maxcount), 1),
+            of_sd = round(sd(maxcount), 1),
+            of_med = median(maxcount),
+            of_min = min(maxcount),
+            of_max = max(maxcount)) %>%
+  data.frame()
+
+# Try using log(maxcount)?
+library(lme4)
+m1 <- lmer(log(maxcount) ~ latitude + (1|fyr) + (1|id), data = ofmax)
+summary(m1)
+# Max counts increased with latitude. Residual variance greater than random
+# effect of individual and random year effect tiny.
+
+
+  
+
+
+
+

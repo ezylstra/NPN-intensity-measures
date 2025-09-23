@@ -75,24 +75,18 @@ count(spil, common_name, phenophase_description) %>%
 # Filter data: plant-phenophase-year combinations -----------------------------#
 
 sites <- si %>%
-  group_by(site_id, site_name, state, latitude, longitude) %>%
+  group_by(site_id, site_name, state, 
+           latitude, longitude, elevation_in_meters) %>%
   summarize(n_plants = n_distinct(individual_id), .groups = "keep") %>%
+  rename(lat = latitude,
+         lon = longitude,
+         elev = elevation_in_meters) %>%
   data.frame()
 
 # Map
 leaflet(sites) %>% addTiles() %>%
-  addCircleMarkers(lng = ~longitude, lat = ~latitude, radius = ~n_plants, 
-                   fillOpacity = 0.6) %>%
-  # Sites in Fort Huachuca in Red
-  addCircleMarkers(data = filter(sites, 
-                                 longitude > -110.4 & longitude < (-110.2),
-                                 latitude > 31.48 & latitude < 31.6),
-                   lng = ~longitude,
-                   lat = ~latitude,
-                   fillOpacity = 1, 
-                   color = "red",
-                   radius = ~n_plants)
-
+  addCircleMarkers(lng = ~lon, lat = ~lat, radius = ~n_plants, 
+                   fillOpacity = 0.6)
 # Are sites with no state listed in the US?
 mn_range <- list(
   mn = ~mean(.x, na.rm = TRUE),
@@ -107,10 +101,57 @@ si %>%
 # Limit to US + Ontario and longitude > 100 degW
 qcsite <- sites$site_id[sites$state == "QC" & !is.na(sites$state)]
 sites <- sites %>%
-  filter(longitude > (-100)) %>%
+  filter(lon > (-100)) %>%
   filter(site_id != qcsite)
 si <- si %>%
   filter(site_id %in% unique(sites$site_id))
+
+# Some sites are missing elevation - will grab elevations for all sites using
+# the elevatr package
+# Some observations missing elevation. Will fill in using the elevatr package
+elev_fill <- sites %>%
+  distinct(site_id, lat, lon) %>%
+  st_as_sf(coords = c("lon", "lat"), crs = 4326)
+elev_fill <- get_elev_point(locations = elev_fill, src = "epqs")
+elev_fill <- data.frame(elev_fill) %>%
+  mutate(elev_new = round(elevation)) %>%
+  select(site_id, elev_new)
+elevations <- sites %>%
+  left_join(elev_fill, by = "site_id")
+
+# Woah! There are a whole bunch of sites in NN database where the elevation
+# listed appears to be in feet rather than meters.
+elevations <- elevations %>%
+  mutate(convert = round(elev/3.28084)) %>%
+  mutate(prob = ifelse(abs(elev_new - convert) < abs(elev_new - elev), 1, 0))
+
+# elevations %>%
+#   select(site_id, lat, lon, elev, elev_new, prob) %>%
+#   rename(elev_original = elev,
+#          elev_USGS = elev_new, 
+#          problem = prob) %>%
+#   write.csv(file = "C:/Users/erin/Desktop/elevation-issues.csv", 
+#             row.names = FALSE)
+
+ggplot(elevations, aes(x = elev, y = elev_new)) +
+  geom_point(aes(color = factor(prob))) +
+  scale_color_manual(values = c("blue", "red")) +
+  geom_abline(slope = 1, intercept = 0, color = "blue") +
+  geom_abline(slope = 1/3.28084, intercept = 0, color = "red")
+
+count(elevations, prob)
+# >11% of sites have elevation reported in feet
+
+# Also, one reported elevation just seems to be wrong (listed as 257 m, should
+# be 634 m):
+filter(elevations, elev < 400 & elev_new > 600)
+
+# Given all this, we'll use elevations from the R package for all
+sites <- sites %>%
+  left_join(select(elevations, site_id, elev_new), by = "site_id") %>% 
+  select(-elev) %>%
+  rename(elev = elev_new)
+rm(elevations)
 
 # Combine observations from both flower phenophases ---------------------------#
 
@@ -329,7 +370,10 @@ ggplot(filter(of, yr == 2016), aes(x = doy, y = nopen)) +
   geom_line() +
   geom_point(color = "blue") +
   facet_wrap(~id)
-
+ggplot(filter(of, yr == 2016), aes(x = doy, y = log(nopen + 0.1))) +
+  geom_line() +
+  geom_point(color = "blue") +
+  facet_wrap(~id)
 # There are massive differences in max counts among plants within and across 
 # years. 
 
@@ -365,13 +409,10 @@ ofmax <- of %>%
             maxcount = max(nopen),
             .groups = "keep") %>%
   data.frame() %>%
-  left_join(select(sites, site_id, state, latitude, longitude), 
+  left_join(select(sites, site_id, state, lat, lon, elev), 
             by = "site_id") %>%
   filter(yr > 2015) %>%
   mutate(fyr = factor(yr))
-  
-# Want to get elevation
-# Want to get some kind of weather variables (relating to forcing/chilling/precip?)
 
 # Doesn't look like there are obvious differences among years across plants.
 # 2020 and 2022 had lower max counts, but they're not hugely different.
@@ -386,15 +427,34 @@ ofmax %>%
             of_max = max(maxcount)) %>%
   data.frame()
 
-# Try using log(maxcount)?
+# Start simple, using lmer with log(maxcount)?
 library(lme4)
-m1 <- lmer(log(maxcount) ~ latitude + (1|fyr) + (1|id), data = ofmax)
+m1 <- lmer(log(maxcount) ~ lat + lon + elev + (1|fyr) + (1|id), data = ofmax)
 summary(m1)
-# Max counts increased with latitude. Residual variance greater than random
-# effect of individual and random year effect tiny.
+# Max counts increased with latitude; possibly a negative effect of longitude
+# No effect of elevation. 
+# Residual variance greater than random effect of individual
+# Random year effect tiny.
 
+# Would like to get some kind of weather variables (relating to 
+# forcing/chilling/precip?)
 
-  
+# Could use bin counts and then use ordinal regression models....
+
+# Modeling seasonal variation in counts by plant-year -------------------------# 
+
+of_plantyr <- of %>%
+  filter(yr > 2015) %>%
+  left_join(select(sites, site_id, state, lat, lon, elev), by = "site_id") %>%
+  group_by(yr, id, site_id, lat, lon, elev) %>%
+  summarize(nobs = n(),
+            nflower = sum(status_flowers),
+            nopen = sum(status_open),
+            first = min(doy),
+            last = max(doy), 
+            .groups = "keep") %>%
+  data.frame()
+# There are a total of 525 plant-years in the filtered dataset for 2016-2025
 
 
 

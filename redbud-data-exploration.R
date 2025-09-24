@@ -108,7 +108,6 @@ si <- si %>%
 
 # Some sites are missing elevation - will grab elevations for all sites using
 # the elevatr package
-# Some observations missing elevation. Will fill in using the elevatr package
 elev_fill <- sites %>%
   distinct(site_id, lat, lon) %>%
   st_as_sf(coords = c("lon", "lat"), crs = 4326)
@@ -426,6 +425,19 @@ ofmax %>%
             of_min = min(maxcount),
             of_max = max(maxcount)) %>%
   data.frame()
+# Could look for evidence of masting in much smaller area, but it's tough
+# as sample size become prohibitively small in early years:
+ofmax %>%
+  filter(lat > 37 & lat < 40 & lon > (-80) & lon < (-75)) %>%
+  group_by(yr) %>%
+  summarize(nplants = n_distinct(id),
+            nobs = n(),
+            of_mean = round(mean(maxcount), 1),
+            of_sd = round(sd(maxcount), 1),
+            of_med = median(maxcount),
+            of_min = min(maxcount),
+            of_max = max(maxcount)) %>%
+  data.frame()
 
 # Start simple, using lmer with log(maxcount)?
 library(lme4)
@@ -439,23 +451,72 @@ summary(m1)
 # Would like to get some kind of weather variables (relating to 
 # forcing/chilling/precip?)
 
-# Could use bin counts and then use ordinal regression models....
+# Could also bin counts and then use ordinal regression models....
 
-# Modeling seasonal variation in counts by plant-year -------------------------# 
+
+# Evaluating seasonal variation in counts by plant-year -----------------------# 
+
+# See project notes, but I don't think it makes much sense to fit smooths/GAMs
+# to the number of open flowers for each plant-year, and there aren't any 
+# natural ways to group plants like there were with gardens/accessions in the 
+# Rauschkolb preprint.
+
+# Do we need to filter out plant-years where there are long gaps between
+# observations -- this could really bias estimates of peak date (eg, 150802 in
+# 2018). Really, we just need to find those series where the gap is adjacent to
+# max values.
+
+of <- of %>%
+  arrange(id, observation_date) %>%
+  mutate(interval_before = NA) %>%
+  mutate(obsdate = ymd(observation_date)) %>%
+  select(-observation_date)
+for (i in 2:nrow(of)) {
+  of$interval_before[i] <- ifelse(
+    of$id[i] == of$id[i - 1] & of$yr[i] == of$yr[i - 1],
+    as.numeric(of$obsdate[i] - of$obsdate[i - 1]),
+    NA
+  )
+}
+nrows <- nrow(of)
+of$interval_after <- c(of$interval_before[2:nrows], NA)
+
+of_intermediate <- of %>%
+  filter(yr > 2015) %>%
+  group_by(yr, id) %>%
+  mutate(maxvalue = max(nopen)) %>%
+  ungroup() %>%
+  filter(nopen == maxvalue) %>%
+  group_by(yr, id, maxvalue) %>%
+  summarize(first_max = min(doy),
+            last_max = max(doy),
+            .groups = "keep") %>%
+  data.frame()
 
 of_plantyr <- of %>%
   filter(yr > 2015) %>%
   left_join(select(sites, site_id, state, lat, lon, elev), by = "site_id") %>%
-  group_by(yr, id, site_id, lat, lon, elev) %>%
+  left_join(of_intermediate, by = c("yr", "id")) %>%
+  group_by(yr, id, site_id, lat, lon, elev, maxvalue, first_max, last_max) %>%
   summarize(nobs = n(),
             nflower = sum(status_flowers),
             nopen = sum(status_open),
             first = min(doy),
             last = max(doy), 
+            interval_mn = mean(interval_before, na.rm = TRUE),
+            interval_mx = max(interval_before, na.rm = TRUE),
+            interval_beforemax = interval_before[doy == first_max],
+            interval_aftermax = interval_after[doy == last_max],
             .groups = "keep") %>%
-  data.frame()
+  data.frame() %>%
+  mutate(filter30 = ifelse(interval_beforemax > 30 | interval_aftermax > 30, 1, 0),
+         filter21 = ifelse(interval_beforemax > 21 | interval_aftermax > 21, 1, 0))
 # There are a total of 525 plant-years in the filtered dataset for 2016-2025
 
-
-
+# Look at filtering results
+of_plantyr %>%
+  group_by(yr) %>%
+  summarize(nplants = n(),
+            filter30 = n() - sum(filter30),
+            filter21 = n() - sum(filter21))
 

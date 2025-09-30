@@ -6,10 +6,7 @@ library(leaflet)
 library(elevatr)
 library(sf)
 library(terra)
-
-# Specify location of PRISM data ----------------------------------------------#
-
-prism_folder <- "C:/Users/erin/Documents/PRISMData/"
+library(lme4)
 
 # Load and format status-intensity data ---------------------------------------#
 
@@ -311,22 +308,22 @@ flowersw <- flowersw %>%
 # # Looking at weekly values averaged across individuals, this seems like less of 
 # # a problem...
 # 
-# # What about looking at data for an individual?
-# count(filter(flowersw, yr == 2022), id) %>% arrange(desc(n)) %>% head(10)
-# flowersw %>%
-#   filter(yr == 2022 & id == 287224) %>%
-#   mutate(flowers_log = ifelse(intensity_flowers == 0, 
-#                               log(intensity_flowers + 0.1), 
-#                               log(intensity_flowers))) %>%
-#   select(-intensity_flowers) %>%
-#   pivot_longer(cols = c(flowers_log, intensity_open),
-#                names_to = "type",
-#                values_to = "intensity") %>%
-#   # filter(doy %in% 25:200) %>%
-#   ggplot(aes(x = doy, y = intensity)) +
-#   geom_line() +
-#   facet_grid(type ~ ., scales = "free_y")
-# # %open stays high as number of flowers drops off
+# What about looking at data for an individual?
+count(filter(flowersw, yr == 2022), id) %>% arrange(desc(n)) %>% head(10)
+flowersw %>%
+  filter(yr == 2022 & id == 287224) %>%
+  mutate(flowers_log = ifelse(intensity_flowers == 0,
+                              log(intensity_flowers + 0.1),
+                              log(intensity_flowers))) %>%
+  select(-intensity_flowers) %>%
+  pivot_longer(cols = c(flowers_log, intensity_open),
+               names_to = "type",
+               values_to = "intensity") %>%
+  # filter(doy %in% 25:200) %>%
+  ggplot(aes(x = doy, y = intensity)) +
+  geom_line() +
+  facet_grid(type ~ ., scales = "free_y")
+# %open stays high as number of flowers drops off
 
 # Calculate estimated number of open flowers ----------------------------------#
 
@@ -415,6 +412,9 @@ peaksites <- distinct(of, site_id, lat, lon)
 # Create weather covariates for each site -------------------------------------#
 # All data from PRISM (temps in degC and precip in mm)
 # This section only needs to be run once:
+
+# Specify location of PRISM data
+prism_folder <- "C:/Users/erin/Documents/PRISMData/"
 
 update_weather <- FALSE
 weather_missing <- ifelse(length(list.files("weather-data/redbud")) == 0, 
@@ -558,15 +558,13 @@ agdd_mar1 <- read.csv("weather-data/redbud/agdd-mar1.csv")
 
 # Modeling variation in max annual counts -------------------------------------# 
 
-# Merge with site information, and limit data to 2016-2025
+# Find annual max count and limit data to 2016-2025
 ofmax <- of %>%
-  group_by(site_id, id, yr) %>%
+  group_by(site_id, id, state, lat, lon, elev, yr) %>%
   summarize(nobs = n(),
             maxcount = max(nopen),
             .groups = "keep") %>%
   data.frame() %>%
-  left_join(select(sites, site_id, state, lat, lon, elev), 
-            by = "site_id") %>%
   filter(yr > 2015) %>%
   mutate(fyr = factor(yr))
 
@@ -584,20 +582,19 @@ ofmax %>%
   data.frame()
 # Could look for evidence of masting in much smaller area, but it's tough
 # as sample size become prohibitively small in early years:
-ofmax %>%
-  filter(lat > 37 & lat < 40 & lon > (-80) & lon < (-75)) %>%
-  group_by(yr) %>%
-  summarize(nplants = n_distinct(id),
-            nobs = n(),
-            of_mean = round(mean(maxcount), 1),
-            of_sd = round(sd(maxcount), 1),
-            of_med = median(maxcount),
-            of_min = min(maxcount),
-            of_max = max(maxcount)) %>%
-  data.frame()
+# ofmax %>%
+#   filter(lat > 37 & lat < 40 & lon > (-80) & lon < (-75)) %>%
+#   group_by(yr) %>%
+#   summarize(nplants = n_distinct(id),
+#             nobs = n(),
+#             of_mean = round(mean(maxcount), 1),
+#             of_sd = round(sd(maxcount), 1),
+#             of_med = median(maxcount),
+#             of_min = min(maxcount),
+#             of_max = max(maxcount)) %>%
+#   data.frame()
 
 # Start simple, using lmer with log(maxcount)?
-library(lme4)
 m1 <- lmer(log(maxcount) ~ lat + lon + elev + (1|fyr) + (1|site_id), 
            data = ofmax)
 summary(m1)
@@ -606,11 +603,76 @@ summary(m1)
 # Residual variance (individual) greater than site variance
 # Random year effect tiny.
 
-# Would like to get some kind of weather variables (relating to 
-# forcing/chilling/precip?)
+# Create weather variables and attach to phenology data
+# Winter precip (Dec-Feb) and preceding 6-month precip (Nov-Apr)
+ppt <- ppt %>%
+  mutate(ppt_win = dec + jan + feb,
+         ppt_6mo = nov + dec + jan + feb + mar + apr) %>%
+  select(site_id, season, ppt_win, ppt_6mo) %>%
+  rename(yr = season)
+ofmax <- ofmax %>%
+  left_join(ppt, by = c("site_id", "yr"))
+# Winter min temperature
+tmin_win <- tmin_win %>% rename(yr = season)
+ofmax <- ofmax %>%
+  left_join(tmin_win, by = c("site_id", "yr"))
+# For GDD values, we need to figure out what date to accumulate GDD through
+# We could use the predicted mean DOY plants at a given latitude were reported
+# with open flowers.
+ggplot(data = filter(of, status_open == 1), aes(x = lat, y = doy)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", color = "blue")
+openflower_lm <- lm(doy ~ lat, data = filter(of, status_open == 1))
+doys <- data.frame(lat = sort(unique(of$lat)))
+preds <- predict(openflower_lm, newdata = doys)
+of_doy_preds <- data.frame(lat = doys$lat,
+                           doy_pred = round(preds))
+ofmax <- ofmax %>%
+  left_join(of_doy_preds, by = "lat")
+ofmax$agdd_jan1 <- NA
+for (i in 1:nrow(ofmax)) {
+  site_agdds <- filter(agdd_jan1, 
+                       site_id == ofmax$site_id[i], season == ofmax$yr[i])
+  colname <- paste0("d", ofmax$doy_pred[i])
+  ofmax$agdd_jan1[i] <- site_agdds[,colnames(site_agdds) == colname]
+}
+  # Alternatively, we could figure out the mean DOY each individual had a max
+  # count in each year.
+
+ofmax <- ofmax %>%
+  mutate(ppt_win_z = (ppt_win - mean(ppt_win)) / sd(ppt_win),
+         ppt_6mo_z = (ppt_6mo - mean(ppt_6mo)) / sd(ppt_6mo),
+         tmin_win_z = (tmin_win - mean(tmin_win)) / sd(tmin_win),
+         agdd_z = (agdd_jan1 - mean(agdd_jan1)) / sd(agdd_jan1),
+         lat_z = (lat - mean(lat)) / sd(lat),
+         elev_z = (elev - mean(elev)) / sd(elev))
+
+# Precipitation effects
+m_pptwin <- lmer(log(maxcount) ~ lat_z + elev_z + ppt_win_z + (1|fyr) + (1|site_id), 
+                 data = ofmax)
+summary(m_pptwin) # Positive, close to signif
+m_ppt6mo <- lmer(log(maxcount) ~ lat_z + elev_z + ppt_6mo_z + (1|fyr) + (1|site_id), 
+                 data = ofmax)
+summary(m_ppt6mo) # Positive, close to signif (slightly bigger effect than winter ppt)
+
+# Forcing temperatures
+# Not too correlated with latitude (r = -0.47)
+m_agdd <- lmer(log(maxcount) ~ lat_z + elev_z + agdd_z + (1|fyr) + (1|site_id),
+               data = ofmax)
+summary(m_agdd) # Negative effect, but not signif (reduced effect of latitude too)
+m_agddi <- lmer(log(maxcount) ~ lat_z * agdd_z + elev_z + (1|fyr) + (1|site_id),
+                data = ofmax)
+summary(m_agddi) # Interaction effect is ~ 0, so no help.
+
+# Winter temperature effect
+# It's negatively correlated with latitude (r = -0.81), so would probably be
+# better to look at differences from long-term normals or use residuals from
+# a temperature ~ latitude regression.
+m_tminwin <- lmer(log(maxcount) ~ lat_z + elev_z + tmin_win_z + (1|fyr) + (1|site_id), 
+                  data = ofmax)
+summary(m_tminwin)
 
 # Could also bin counts and then use ordinal regression models....
-
 
 # Evaluating seasonal variation in counts by plant-year -----------------------# 
 
@@ -653,7 +715,6 @@ of_intermediate <- of %>%
 
 of_plantyr <- of %>%
   filter(yr > 2015) %>%
-  left_join(select(sites, site_id, state, lat, lon, elev), by = "site_id") %>%
   left_join(of_intermediate, by = c("yr", "id")) %>%
   group_by(yr, id, site_id, lat, lon, elev, maxvalue, first_max, last_max) %>%
   summarize(nobs = n(),
@@ -708,7 +769,152 @@ summary(mpeak1)
 # Forcing requirement with ~0 deg base, starting after exceeding "photoperiod" 
 # threshold of ~ 11 hours (which is roughly around 1 March for this region)
 
-# Need to get weather data for sites
-peaksites <- distinct(of_plantyr30, site_id, lat, lon)
+# Create weather variables and attach to phenology data
+# Winter precip (Dec-Feb) and preceding 6-month precip (Nov-Apr)
+ppt <- ppt %>%
+  mutate(ppt_win = dec + jan + feb,
+         ppt_6mo = nov + dec + jan + feb + mar + apr) %>%
+  select(site_id, season, ppt_win, ppt_6mo) %>%
+  rename(yr = season)
+of_plantyr30 <- of_plantyr30 %>%
+  left_join(ppt, by = c("site_id", "yr"))
+# Winter min temperature
+tmin_win <- tmin_win %>% rename(yr = season)
+of_plantyr30 <- of_plantyr30  %>%
+  left_join(tmin_win, by = c("site_id", "yr"))
+# For GDD values, we need to figure out what date to accumulate GDD through
+# We could use the predicted mean DOY plants at a given latitude were reported
+# with open flowers.
+ggplot(data = filter(of, status_open == 1), aes(x = lat, y = doy)) + 
+  geom_point() + 
+  geom_smooth(method = "lm", color = "blue")
+openflower_lm <- lm(doy ~ lat, data = filter(of, status_open == 1))
+doys <- data.frame(lat = sort(unique(of$lat)))
+preds <- predict(openflower_lm, newdata = doys)
+of_doy_preds <- data.frame(lat = doys$lat,
+                           doy_pred = round(preds))
+of_plantyr30 <- of_plantyr30 %>%
+  left_join(of_doy_preds, by = "lat")
+of_plantyr30$agdd_jan1 <- NA
+for (i in 1:nrow(of_plantyr30)) {
+  site_agdds <- filter(agdd_jan1, 
+                       site_id == of_plantyr30$site_id[i], 
+                       season == of_plantyr30$yr[i])
+  colname <- paste0("d", of_plantyr30$doy_pred[i])
+  of_plantyr30$agdd_jan1[i] <- site_agdds[,colnames(site_agdds) == colname]
+}
+
+of_plantyr30 <- of_plantyr30 %>%
+  mutate(ppt_win_z = (ppt_win - mean(ppt_win)) / sd(ppt_win),
+         ppt_6mo_z = (ppt_6mo - mean(ppt_6mo)) / sd(ppt_6mo),
+         tmin_win_z = (tmin_win - mean(tmin_win)) / sd(tmin_win),
+         agdd_z = (agdd_jan1 - mean(agdd_jan1)) / sd(agdd_jan1))
+
+# Correlations?
+of_plantyr30 %>% 
+  select(lat, elev, ppt_win, ppt_6mo, tmin_win, agdd_jan1) %>%
+  cor()
+
+# Precip
+mpeak_pptwin <- lmer(peak ~ lat_z + elev_z + ppt_win_z + (1|fyr) + (1|site_id), 
+                     data = of_plantyr30)
+summary(mpeak_pptwin) # Positive effect but not signif
+mpeak_ppt6mo <- lmer(peak ~ lat_z + elev_z + ppt_6mo_z + (1|fyr) + (1|site_id), 
+                     data = of_plantyr30)
+summary(mpeak_ppt6mo) # Positive effect but not signif (smaller effect than winter ppt)
+
+# Winter temps are negatively correlated with latitude, so can't put in same
+# model unless we calculate deviations from normal...
+
+# GDD
+mpeak_agdd <- lmer(peak ~ lat_z + elev_z + agdd_z + (1|fyr) + (1|site_id),
+                   data = of_plantyr30)
+summary(mpeak_agdd) 
+# Strong negative effect (higher temps, earlier peak), and effect of latitude 
+# but not elevation still significant.
+
+# More complex weather models
+mpeak_weather1 <- lmer(peak ~ lat_z * agdd_z + (1|fyr) + (1|site_id),
+                       data = of_plantyr30)
+summary(mpeak_weather1) # No evidence that interaction needed
+mpeak_weather2 <- lmer(peak ~ lat_z + agdd_z + ppt_win_z + (1|fyr) + (1|site_id),
+                       data = of_plantyr30)
+summary(mpeak_weather2) # No winter precip effect if agdd in the model.
+
+# So it looks like simple model with AGDD and latitude is best.
+
+# How do peak dates compare to first yeses for open flowers? ------------------#
+# Need to restrict geographically (lon > -100 and US/Ontario only)
+# Remove observations past DOY 180 
+# Limit by when prior no occurred
+# Just used data from 2016-2025
+
+# Use si dataframe (before combining same-day observations of flowers/open
+# flowers)? Or use individual phenometrics dataset? I think si is preferred
+# since I already did a little data filtering and clean up
+
+firstopen <- si %>%
+  filter(phenophase_description == "Open flowers") %>%
+  filter(yr > 2015) %>%
+  select(site_id, individual_id, observation_date, day_of_year, yr,
+         phenophase_status) %>%
+  rename(id = individual_id,
+         obsdate = observation_date, 
+         doy = day_of_year,
+         status = phenophase_status) %>%
+  arrange(id, obsdate) %>%
+  mutate(obsdate = as.Date(obsdate))
+
+firstopen$interval <- NA
+firstopen$firstyes <- 0
+for (i in 2:nrow(firstopen)) {
+  # Calculate interval (number of days since last observation)
+  firstopen$interval[i] <- ifelse(
+    firstopen$id[i] == firstopen$id[i - 1],
+    as.numeric(firstopen$obsdate[i] - firstopen$obsdate[i - 1]), NA
+  )
+  # Identify first yes in a series
+  firstopen$firstyes[i] <- ifelse(
+    firstopen$id[i] == firstopen$id[i - 1] & 
+      firstopen$status[i] == 1 &
+      firstopen$status[i - 1] == 0,
+    1, 0
+  )
+}
+
+firstopen <- firstopen %>%
+  mutate(int30 = ifelse(interval <= 30 & !is.na(interval), 1, 0),
+         int21 = ifelse(interval <= 21 & !is.na(interval), 1, 0),
+         int14 = ifelse(interval <= 14 & !is.na(interval), 1, 0))
+
+# For now, use first yeses of the year that had a prior no within 14 days
+firstopen14 <- firstopen %>%
+  filter(firstyes == 1 & int14 == 1) %>%
+  arrange(id, obsdate) %>%
+  distinct(id, yr, .keep_all = TRUE)
+
+firstopen14 %>%
+  group_by(yr) %>%
+  summarize(n_plants = n_distinct(id),
+            n_sites = n_distinct(site_id),
+            interval_mn = round(mean(interval))) %>%
+  data.frame()
+
+#### PICK UP HERE ##############################################################
 
 
+
+# (And maybe) How to peak dates compare to peak proportion of plants with -----#
+# open flowers? ---------------------------------------------------------------#
+# Here, would need to find sites with lots of plants OR look at some region that
+# contains multiple plants
+
+multplants <- of %>%
+  group_by(site_id, yr) %>%
+  summarize(nplants = n_distinct(id), .groups = "keep") %>%
+  filter(nplants >= 5)
+# Site IDs: 22589, 44146, 44174, 44214, 44581, and 50285 (several in a few years)
+# But even then the max number of plants is 6, which is too few to calculate
+# proportions.
+
+# Would need to define some other region(s) of interest.

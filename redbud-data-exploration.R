@@ -307,7 +307,7 @@ flowersw <- flowersw %>%
 #   facet_grid(type ~ ., scales = "free_y")
 # # Looking at weekly values averaged across individuals, this seems like less of 
 # # a problem...
-# 
+
 # What about looking at data for an individual?
 count(filter(flowersw, yr == 2022), id) %>% arrange(desc(n)) %>% head(10)
 flowersw %>%
@@ -315,15 +315,19 @@ flowersw %>%
   mutate(flowers_log = ifelse(intensity_flowers == 0,
                               log(intensity_flowers + 0.1),
                               log(intensity_flowers))) %>%
+  mutate(nopen = ceiling(intensity_flowers * intensity_open / 100)) %>%
+  mutate(nopen_log = ifelse(nopen == 0,
+                            log(nopen + 0.1),
+                            log(nopen))) %>%
   select(-intensity_flowers) %>%
-  pivot_longer(cols = c(flowers_log, intensity_open),
+  pivot_longer(cols = c(flowers_log, intensity_open, nopen_log),
                names_to = "type",
                values_to = "intensity") %>%
   # filter(doy %in% 25:200) %>%
   ggplot(aes(x = doy, y = intensity)) +
   geom_line() +
   facet_grid(type ~ ., scales = "free_y")
-# %open stays high as number of flowers drops off
+# %open stays high as number of flowers drops off (at least for this ind, year)
 
 # Calculate estimated number of open flowers ----------------------------------#
 
@@ -594,58 +598,76 @@ ofmax %>%
 #             of_max = max(maxcount)) %>%
 #   data.frame()
 
-# Start simple, using lmer with log(maxcount)?
-m1 <- lmer(log(maxcount) ~ lat + lon + elev + (1|fyr) + (1|site_id), 
-           data = ofmax)
-summary(m1)
-# Max counts increased with latitude; possibly a negative effect of longitude
-# No effect of elevation. 
-# Residual variance (individual) greater than site variance
-# Random year effect tiny.
-
 # Create weather variables and attach to phenology data
-# Winter precip (Dec-Feb) and preceding 6-month precip (Nov-Apr)
-ppt <- ppt %>%
-  mutate(ppt_win = dec + jan + feb,
-         ppt_6mo = nov + dec + jan + feb + mar + apr) %>%
-  select(site_id, season, ppt_win, ppt_6mo) %>%
-  rename(yr = season)
-ofmax <- ofmax %>%
-  left_join(ppt, by = c("site_id", "yr"))
-# Winter min temperature
-tmin_win <- tmin_win %>% rename(yr = season)
-ofmax <- ofmax %>%
-  left_join(tmin_win, by = c("site_id", "yr"))
-# For GDD values, we need to figure out what date to accumulate GDD through
-# We could use the predicted mean DOY plants at a given latitude were reported
-# with open flowers.
-ggplot(data = filter(of, status_open == 1), aes(x = lat, y = doy)) + 
-  geom_point() + 
-  geom_smooth(method = "lm", color = "blue")
-openflower_lm <- lm(doy ~ lat, data = filter(of, status_open == 1))
-doys <- data.frame(lat = sort(unique(of$lat)))
-preds <- predict(openflower_lm, newdata = doys)
-of_doy_preds <- data.frame(lat = doys$lat,
-                           doy_pred = round(preds))
-ofmax <- ofmax %>%
-  left_join(of_doy_preds, by = "lat")
-ofmax$agdd_jan1 <- NA
-for (i in 1:nrow(ofmax)) {
-  site_agdds <- filter(agdd_jan1, 
-                       site_id == ofmax$site_id[i], season == ofmax$yr[i])
-  colname <- paste0("d", ofmax$doy_pred[i])
-  ofmax$agdd_jan1[i] <- site_agdds[,colnames(site_agdds) == colname]
-}
-  # Alternatively, we could figure out the mean DOY each individual had a max
-  # count in each year.
+  
+  # Winter precip (Dec-Feb) and preceding 6-month precip (Nov-Apr)
+  ppt <- ppt %>%
+    mutate(ppt_win = dec + jan + feb,
+           ppt_6mo = nov + dec + jan + feb + mar + apr) %>%
+    select(site_id, season, ppt_win, ppt_6mo) %>%
+    rename(yr = season)
+  ofmax <- ofmax %>%
+    left_join(ppt, by = c("site_id", "yr"))
+  
+  # Winter min temperature
+  # For now, will relativize values by 10-year mean at each site (to deal with 
+  # correlations with latitude)
+  tmin_win_site <- tmin_win %>%
+    group_by(site_id) %>%
+    summarize(tmin_mn = mean(tmin_win))
+  tmin_win <- tmin_win %>%
+    rename(yr = season) %>%
+    left_join(tmin_win_site, by = "site_id") %>%
+    mutate(tmin_win_anom = tmin_win - tmin_mn)
+  ofmax <- ofmax %>%
+    left_join(select(tmin_win, -tmin_mn), by = c("site_id", "yr"))  
+  
+  # For GDD values, we need to figure out what date to accumulate GDD through
+  # We could use the predicted mean DOY plants at a given latitude were reported
+  # with open flowers.
+  ggplot(data = filter(of, status_open == 1), aes(x = lat, y = doy)) + 
+    geom_point() + 
+    geom_smooth(method = "lm", color = "blue")
+  openflower_lm <- lm(doy ~ lat, data = filter(of, status_open == 1))
+  doys <- data.frame(lat = sort(unique(of$lat)))
+  preds <- predict(openflower_lm, newdata = doys)
+  of_doy_preds <- data.frame(lat = doys$lat,
+                             doy_pred = round(preds))
+  ofmax <- ofmax %>%
+    left_join(of_doy_preds, by = "lat")
+  ofmax$agdd_jan1 <- NA
+  for (i in 1:nrow(ofmax)) {
+    site_agdds <- filter(agdd_jan1, 
+                         site_id == ofmax$site_id[i], season == ofmax$yr[i])
+    colname <- paste0("d", ofmax$doy_pred[i])
+    ofmax$agdd_jan1[i] <- site_agdds[,colnames(site_agdds) == colname]
+  }
 
 ofmax <- ofmax %>%
   mutate(ppt_win_z = (ppt_win - mean(ppt_win)) / sd(ppt_win),
          ppt_6mo_z = (ppt_6mo - mean(ppt_6mo)) / sd(ppt_6mo),
          tmin_win_z = (tmin_win - mean(tmin_win)) / sd(tmin_win),
+         tmin_win_anom_z = (tmin_win_anom - mean(tmin_win_anom)) / sd(tmin_win_anom),
          agdd_z = (agdd_jan1 - mean(agdd_jan1)) / sd(agdd_jan1),
          lat_z = (lat - mean(lat)) / sd(lat),
+         lon_z = (lon - mean(lon)) / sd(lon),
          elev_z = (elev - mean(elev)) / sd(elev))
+
+# Correlations
+ofmax %>%
+  select(ppt_win, ppt_6mo, tmin_win, tmin_win_anom, 
+         agdd_jan1, lat, lon, elev) %>%
+  cor() %>%
+  round(2)
+
+# Start simple, using lmer with log(maxcount)?
+m1 <- lmer(log(maxcount) ~ lat_z + lon_z + elev_z + (1|fyr) + (1|site_id), 
+           data = ofmax)
+summary(m1)
+# Max counts increased with latitude
+# No effect of elevation, and not much evidence for longitude either
+# Residual variance (individual) greater than site variance
+# Random year effect tiny.
 
 # Precipitation effects
 m_pptwin <- lmer(log(maxcount) ~ lat_z + elev_z + ppt_win_z + (1|fyr) + (1|site_id), 
@@ -655,8 +677,14 @@ m_ppt6mo <- lmer(log(maxcount) ~ lat_z + elev_z + ppt_6mo_z + (1|fyr) + (1|site_
                  data = ofmax)
 summary(m_ppt6mo) # Positive, close to signif (slightly bigger effect than winter ppt)
 
-# Forcing temperatures
-# Not too correlated with latitude (r = -0.47)
+# Winter min temp effects
+m_tminwin <- lmer(log(maxcount) ~ lat_z + elev_z + tmin_win_anom_z + 
+                    (1|fyr) + (1|site_id), 
+                  data = ofmax)
+summary(m_tminwin) # Negative effect, close to signif (so higher winter min 
+# temps means fewer flowers). Elevation no longer close to signif.
+
+# Forcing temperatures (AGDD)
 m_agdd <- lmer(log(maxcount) ~ lat_z + elev_z + agdd_z + (1|fyr) + (1|site_id),
                data = ofmax)
 summary(m_agdd) # Negative effect, but not signif (reduced effect of latitude too)
@@ -664,13 +692,23 @@ m_agddi <- lmer(log(maxcount) ~ lat_z * agdd_z + elev_z + (1|fyr) + (1|site_id),
                 data = ofmax)
 summary(m_agddi) # Interaction effect is ~ 0, so no help.
 
-# Winter temperature effect
-# It's negatively correlated with latitude (r = -0.81), so would probably be
-# better to look at differences from long-term normals or use residuals from
-# a temperature ~ latitude regression.
-m_tminwin <- lmer(log(maxcount) ~ lat_z + elev_z + tmin_win_z + (1|fyr) + (1|site_id), 
-                  data = ofmax)
-summary(m_tminwin)
+# Combine:
+m_all <- lmer(log(maxcount) ~ lat_z + ppt_6mo_z + tmin_win_anom_z + agdd_z +
+                (1|fyr) + (1|site_id), 
+              data = ofmax)
+summary(m_all)
+confint(m_all)
+# Latitude signif effect, 6-mo ppt is marginally signif (positive). Winter
+# min temps and AGDD not signf (|t| < 1.1)
+
+# Combine, removing yearly RE (which had variance near 0):
+m_all2 <- lmer(log(maxcount) ~ lat_z + ppt_6mo_z + tmin_win_anom_z + agdd_z +
+                (1|site_id), 
+              data = ofmax)
+summary(m_all2)
+confint(m_all2)
+# Latitude signif effect, 6-mo ppt is signif (positive). 
+# Winter min temps and AGDD not close to signif
 
 # Could also bin counts and then use ordinal regression models....
 
@@ -730,7 +768,6 @@ of_plantyr <- of %>%
   data.frame() %>%
   mutate(filter30 = ifelse(interval_beforemax > 30 | interval_aftermax > 30, 1, 0),
          filter21 = ifelse(interval_beforemax > 21 | interval_aftermax > 21, 1, 0))
-# There are a total of 525 plant-years in the filtered dataset for 2016-2025
 
 # Look at filtering results
 of_plantyr %>%
@@ -740,7 +777,7 @@ of_plantyr %>%
             filter21 = n() - sum(filter21))
 
 # For now, will use 30-day interval filter
-# Calculate peak date as mean date betewen first and last dates with max count
+# Calculate peak date as mean date between first and last dates with max count
 of_plantyr30 <- of_plantyr %>%
   filter(filter30 == 0) %>%
   select(-c(interval_mn, interval_mx, filter30, filter21)) %>%
@@ -751,6 +788,7 @@ of_plantyr30 <- of_plantyr %>%
          lat_z = (lat - mean(lat)) / sd(lat),
          lon_z = (lon - mean(lon)) / sd(lon),
          elev_z = (elev - mean(elev)) / sd(elev))
+# There are a total of 506 plant-year combinations in the filtered dataset
  
 # Really basic model:
 # (note: can't include site id, id, and year REs in the same model. Singular
@@ -769,79 +807,80 @@ summary(mpeak1)
 # Forcing requirement with ~0 deg base, starting after exceeding "photoperiod" 
 # threshold of ~ 11 hours (which is roughly around 1 March for this region)
 
-# Create weather variables and attach to phenology data
-# Winter precip (Dec-Feb) and preceding 6-month precip (Nov-Apr)
-ppt <- ppt %>%
-  mutate(ppt_win = dec + jan + feb,
-         ppt_6mo = nov + dec + jan + feb + mar + apr) %>%
-  select(site_id, season, ppt_win, ppt_6mo) %>%
-  rename(yr = season)
-of_plantyr30 <- of_plantyr30 %>%
-  left_join(ppt, by = c("site_id", "yr"))
-# Winter min temperature
-tmin_win <- tmin_win %>% rename(yr = season)
-of_plantyr30 <- of_plantyr30  %>%
-  left_join(tmin_win, by = c("site_id", "yr"))
-# For GDD values, we need to figure out what date to accumulate GDD through
-# We could use the predicted mean DOY plants at a given latitude were reported
-# with open flowers.
-ggplot(data = filter(of, status_open == 1), aes(x = lat, y = doy)) + 
-  geom_point() + 
-  geom_smooth(method = "lm", color = "blue")
-openflower_lm <- lm(doy ~ lat, data = filter(of, status_open == 1))
-doys <- data.frame(lat = sort(unique(of$lat)))
-preds <- predict(openflower_lm, newdata = doys)
-of_doy_preds <- data.frame(lat = doys$lat,
-                           doy_pred = round(preds))
-of_plantyr30 <- of_plantyr30 %>%
-  left_join(of_doy_preds, by = "lat")
-of_plantyr30$agdd_jan1 <- NA
-for (i in 1:nrow(of_plantyr30)) {
-  site_agdds <- filter(agdd_jan1, 
-                       site_id == of_plantyr30$site_id[i], 
-                       season == of_plantyr30$yr[i])
-  colname <- paste0("d", of_plantyr30$doy_pred[i])
-  of_plantyr30$agdd_jan1[i] <- site_agdds[,colnames(site_agdds) == colname]
-}
+# Gathering weather variables
+  
+  # Precip variables
+  of_plantyr30 <- of_plantyr30 %>%
+    left_join(ppt, by = c("site_id", "yr"))
+
+  # Winter min temperature (even though it's highly correlated with latitude)
+  of_plantyr30 <- of_plantyr30  %>%
+    left_join(select(tmin_win, -tmin_mn), by = c("site_id", "yr"))
+
+  # AGDD through DOY 90 (~April 1)
+  agdd_spring <- agdd_jan1 %>%
+    select(site_id, season, d90) %>%
+    rename(yr = season,
+           agdd90 = d90)
+  # AGDD will through a fixed date will be highly correlated with latitude.
+  # So maybe relativize it like winter temps, so we can see whether a warmer 
+  # or colder spring than average adds something beyond latitude?
+  agdd_spring_site <- agdd_spring %>%
+    group_by(site_id) %>%
+    summarize(agdd90_mn = mean(agdd90))
+  agdd_spring <- agdd_spring %>%
+    left_join(agdd_spring_site, by = "site_id") %>%
+    mutate(agdd90_anom = agdd90 - agdd90_mn)
+  of_plantyr30 <- of_plantyr30 %>%
+    left_join(select(agdd_spring, - agdd90_mn), by =  c("site_id", "yr"))
+
+# Correlations
+of_plantyr30 %>%
+  select(ppt_win, ppt_6mo, tmin_win, tmin_win_anom, 
+         agdd90, agdd90_anom, lat, lon, elev) %>%
+  cor() %>%
+  round(2)
+# Moderate positive correlation (0.62) between winter temperature and spring
+# AGDD anomalies, but given that they both include temperatures in Jan-Feb, 
+# that's not too surprising.
 
 of_plantyr30 <- of_plantyr30 %>%
   mutate(ppt_win_z = (ppt_win - mean(ppt_win)) / sd(ppt_win),
          ppt_6mo_z = (ppt_6mo - mean(ppt_6mo)) / sd(ppt_6mo),
          tmin_win_z = (tmin_win - mean(tmin_win)) / sd(tmin_win),
-         agdd_z = (agdd_jan1 - mean(agdd_jan1)) / sd(agdd_jan1))
+         tmin_win_anom_z = (tmin_win_anom - mean(tmin_win_anom)) / sd(tmin_win_anom),
+         agdd90_z = (agdd90 - mean(agdd90)) / sd(agdd90),
+         agdd90_anom_z = (agdd90_anom - mean(agdd90_anom)) / sd(agdd90_anom))  
 
-# Correlations?
-of_plantyr30 %>% 
-  select(lat, elev, ppt_win, ppt_6mo, tmin_win, agdd_jan1) %>%
-  cor()
-
-# Precip
+# Models with weather variables 
 mpeak_pptwin <- lmer(peak ~ lat_z + elev_z + ppt_win_z + (1|fyr) + (1|site_id), 
                      data = of_plantyr30)
-summary(mpeak_pptwin) # Positive effect but not signif
+summary(mpeak_pptwin) # Not significant
 mpeak_ppt6mo <- lmer(peak ~ lat_z + elev_z + ppt_6mo_z + (1|fyr) + (1|site_id), 
                      data = of_plantyr30)
-summary(mpeak_ppt6mo) # Positive effect but not signif (smaller effect than winter ppt)
+summary(mpeak_ppt6mo) # Not significant  
+  
+mpeak_tminwin <- lmer(peak ~ lat_z + elev_z + tmin_win_anom_z +
+                        (1|fyr) + (1|site_id),
+                      data = of_plantyr30)
+summary(mpeak_tminwin) # Signif (negative) effect. So warmer winter associated 
+# with an earlier peak.
 
-# Winter temps are negatively correlated with latitude, so can't put in same
-# model unless we calculate deviations from normal...
+mpeak_agdd90 <- lmer(peak ~ lat_z + elev_z + agdd90_anom_z + (1|fyr) + (1|site_id),
+                     data = of_plantyr30)
+summary(mpeak_agdd90) # Signif (negative) effect. So warmer than average spring
+# associated with an earlier peak.
 
-# GDD
-mpeak_agdd <- lmer(peak ~ lat_z + elev_z + agdd_z + (1|fyr) + (1|site_id),
-                   data = of_plantyr30)
-summary(mpeak_agdd) 
-# Strong negative effect (higher temps, earlier peak), and effect of latitude 
-# but not elevation still significant.
+# Combine weather variables (though need to be a bit wary about correlations)
+mpeak_all <- lmer(peak ~ lat_z + elev_z + agdd90_anom_z + tmin_win_anom_z +
+                    (1|fyr) + (1|site_id),
+                  data = of_plantyr30)
+summary(mpeak_all) # After accounting for spring AGDD anomaly, winter temp
+# effect wasn't significant. 
 
-# More complex weather models
-mpeak_weather1 <- lmer(peak ~ lat_z * agdd_z + (1|fyr) + (1|site_id),
-                       data = of_plantyr30)
-summary(mpeak_weather1) # No evidence that interaction needed
-mpeak_weather2 <- lmer(peak ~ lat_z + agdd_z + ppt_win_z + (1|fyr) + (1|site_id),
-                       data = of_plantyr30)
-summary(mpeak_weather2) # No winter precip effect if agdd in the model.
-
-# So it looks like simple model with AGDD and latitude is best.
+# So AGDD model with lat, elev, and all REs best (of those I tried)
+summary(mpeak_agdd90)
+confint(mpeak_agdd90)
 
 # How do peak dates compare to first yeses for open flowers? ------------------#
 # Need to restrict geographically (lon > -100 and US/Ontario only)
@@ -891,7 +930,11 @@ firstopen <- firstopen %>%
 firstopen14 <- firstopen %>%
   filter(firstyes == 1 & int14 == 1) %>%
   arrange(id, obsdate) %>%
-  distinct(id, yr, .keep_all = TRUE)
+  distinct(id, yr, .keep_all = TRUE) %>%
+  # Filter out any dates that occurred after DOY180
+  filter(doy <= 180) %>%
+  # Merge with site info
+  left_join(select(sites, site_id, lat, lon, elev), by = "site_id")
 
 firstopen14 %>%
   group_by(yr) %>%
@@ -900,8 +943,67 @@ firstopen14 %>%
             interval_mn = round(mean(interval))) %>%
   data.frame()
 
-#### PICK UP HERE ##############################################################
+ggplot() +
+  geom_point(data = of_plantyr30, aes(x = lat, y = peak)) +
+  geom_point(data = firstopen14, aes(x = lat, y = doy), color = "blue")
 
+of_merge <- of_plantyr30 %>%
+  left_join(select(firstopen14, id, yr, doy), by = c("id", "yr")) %>%
+  filter(!is.na(doy))
+fy_peak <- of_merge %>%
+  ggplot(aes(x = doy, y = peak)) +
+  geom_point() +
+  geom_abline(slope = 1, intercept = 0, color = "gray") +
+  labs(x = "First yes DOY", y = "Peak DOY")
+fy_peak
+ggsave("output/redbud-firstyes-peak-compare.png", 
+       fy_peak, 
+       height = 4,
+       width = 6.5,
+       units = "in")
+
+# Do differences vary systematically?
+of_merge <- of_merge %>%
+  rename(firstyes = doy) %>%
+  mutate(diff = peak - firstyes)
+
+# With latitude?
+lm(diff ~ lat_z, data = of_merge) %>% summary()
+of_merge %>%
+  ggplot(aes(x = lat, y = diff)) + 
+  geom_point() +
+  geom_smooth(method = "lm", color = "blue")
+# Very slight decrease in differences at higher latitudes
+
+# With year?
+lm(diff ~ yr0, data = of_merge) %>% summary()
+of_merge %>%
+  ggplot(aes(x = yr, y = diff)) + 
+  geom_point() +
+  geom_smooth(method = "lm", color = "blue")
+# Very slight trends (towards smaller differences) over time
+of_merge %>%
+  group_by(yr) %>%
+  summarize(diff_mn = mean(diff),
+            diff_md = median(diff),
+            diff_min = min(diff),
+            diff_max = max(diff))
+# Possibly some year-to-year differences? But might just be an artifact of small
+# sample sizes
+
+# What about with AGDD later in the spring?
+of_merge %>%
+  select(id, yr, peak, firstyes) %>%
+  pivot_longer(cols = c(peak, firstyes),
+               names_to = "type",
+               values_to = "doy") %>%
+  ggplot(aes(x = doy)) +
+  geom_histogram() +
+  facet_grid(type ~.)
+# Maybe just with plants that have first yeses >= DOY 90 and lat > ~38 deg?
+
+
+#### PICK UP HERE ##############################################################
 
 
 # (And maybe) How to peak dates compare to peak proportion of plants with -----#

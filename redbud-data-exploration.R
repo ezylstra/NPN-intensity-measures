@@ -699,7 +699,7 @@ m_all <- lmer(log(maxcount) ~ lat_z + ppt_6mo_z + tmin_win_anom_z + agdd_z +
 summary(m_all)
 confint(m_all)
 # Latitude signif effect, 6-mo ppt is marginally signif (positive). Winter
-# min temps and AGDD not signf (|t| < 1.1)
+# min temps and AGDD not signif (|t| < 1.1)
 
 # Combine, removing yearly RE (which had variance near 0):
 m_all2 <- lmer(log(maxcount) ~ lat_z + ppt_6mo_z + tmin_win_anom_z + agdd_z +
@@ -813,7 +813,7 @@ summary(mpeak1)
   of_plantyr30 <- of_plantyr30 %>%
     left_join(ppt, by = c("site_id", "yr"))
 
-  # Winter min temperature (even though it's highly correlated with latitude)
+  # Winter min temperature
   of_plantyr30 <- of_plantyr30  %>%
     left_join(select(tmin_win, -tmin_mn), by = c("site_id", "yr"))
 
@@ -943,10 +943,6 @@ firstopen14 %>%
             interval_mn = round(mean(interval))) %>%
   data.frame()
 
-ggplot() +
-  geom_point(data = of_plantyr30, aes(x = lat, y = peak)) +
-  geom_point(data = firstopen14, aes(x = lat, y = doy), color = "blue")
-
 of_merge <- of_plantyr30 %>%
   left_join(select(firstopen14, id, yr, doy), by = c("id", "yr")) %>%
   filter(!is.na(doy))
@@ -981,7 +977,7 @@ of_merge %>%
   ggplot(aes(x = yr, y = diff)) + 
   geom_point() +
   geom_smooth(method = "lm", color = "blue")
-# Very slight trends (towards smaller differences) over time
+# Very slight trend (towards smaller differences) over time
 of_merge %>%
   group_by(yr) %>%
   summarize(diff_mn = mean(diff),
@@ -1000,10 +996,32 @@ of_merge %>%
   ggplot(aes(x = doy)) +
   geom_histogram() +
   facet_grid(type ~.)
-# Maybe just with plants that have first yeses >= DOY 90 and lat > ~38 deg?
+# Maybe just with plants that have first yeses >= DOY 90 and lat > ~38 deg? 
+# (otherwise looking at AGDD after March 1 makes no sense)
 
+# Subset merged data and attach AGDD data (Mar1 through Mar30)
+agdd_mar <- agdd_mar1 %>%
+  select(site_id, season, agdd_0331)
+agdd_mar_site <- agdd_mar %>%
+  group_by(site_id) %>%
+  summarize(agdd_0331_mn = mean(agdd_0331))
+agdd_mar <- agdd_mar %>%
+  left_join(agdd_mar_site, by = "site_id") %>%
+  mutate(agdd_0331_anom = agdd_0331 - agdd_0331_mn) %>%
+  rename(yr = season)
 
-#### PICK UP HERE ##############################################################
+of_merge90 <- of_merge %>%
+  filter(firstyes >= 90 & lat >= 38) %>%
+  left_join(select(agdd_mar, -agdd_0331_mn), 
+            by = c("site_id", "yr")) %>%
+  mutate(agdd_0331_z = (agdd_0331 - mean(agdd_0331)) / sd(agdd_0331),
+         agdd_0331_anom_z = (agdd_0331_anom - mean(agdd_0331_anom)) / sd(agdd_0331_anom))
+
+lmer(diff ~ lat_z + agdd_0331_anom_z + (1|fyr) + (1|site_id), 
+     data = of_merge90) %>% 
+  summary()
+# No evidence that spring AGDD impacts how fast peak flowering occurs relative
+# to first open flower date
 
 
 # (And maybe) How to peak dates compare to peak proportion of plants with -----#

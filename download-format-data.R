@@ -869,10 +869,97 @@ for (rb_yr in rb_yrs) {
                      rb_yr, ".csv"), row.names = FALSE)
 }
 
+# Download data for oaks in midwest--------------------------------------------#
 
-# Save filtered and formatted data to file
-new_filename <- paste0("npn-data/intensity-redbud-", min_yr, "-", max_yr, ".csv")
-write.csv(rb, new_filename, row.names = FALSE)
+oak_spp <- npn_species() %>%
+  filter(genus == "Quercus") %>%
+  select(species_id, common_name, genus, species, functional_type) %>%
+  data.frame() 
+# Focus on 7 species for now:
+oak_spp <- oak_spp %>%
+  filter(species %in% c("alba", "bicolor", "macrocarpa", "palustris", 
+                        "rubra", "stellata", "velutina"))
 
+intensity_file <- list.files(path = "npn-data",
+                             pattern = "intensity-oaks",
+                             full.names = TRUE)
 
+# Identify phenophase classes of interest (for oaks, only fruit related)
+pc <- c(10, 12, 13)
 
+# Download, but only if an intensity csv doesn't exist
+if (length(intensity_file) == 0) {
+  oak_dl <- npn_download_status_data(
+    request_source = "erinz",
+    years = 2009:2025, 
+    species_ids = oak_spp$species_id,
+    pheno_class_ids = pc, 
+    additional_fields = c("site_name",
+                          "observedby_person_id")
+  )
+}
+
+oak <- oak_dl %>%
+  # Create yr column
+  mutate(yr = year(observation_date)) %>%
+  # Convert html coding of ">" to symbol
+  mutate(phenophase_description = str_replace_all(phenophase_description,
+                                                  "&gt;", ">")) %>%
+  # Remove whitespaces in common_name column
+  mutate(common_name = str_trim(common_name)) %>%
+  data.frame()
+
+# Filter out phenophases or intensity categories that weren't used in 2024
+# or phenophases that don't have intensity categories associated with them
+# (for now, keeping phenophases that could have intensity categories, but
+# observers didn't report intensity values)
+oak <- oak %>%
+  filter(phenophase_id %in% ph_2024) %>%
+  filter(intensity_category_id %in% int_2024 | is.na(intensity_category_id))
+# Merge phenophase and intensity information with si data
+oak <- oak %>%
+  select(-observation_id) %>%
+  left_join(ph_merge, by = "phenophase_id") %>%
+  left_join(ivalues, by = c("intensity_category_id", "intensity_value"))
+# Create a new column with intensity labels (factor)
+oak <- oak %>%
+  # Remove anything in parentheses in intensity name
+  mutate(intensity_label = str_replace(intensity_name, " \\s*\\([^\\)]+\\)", "")) %>%
+  # Remove the word " present" from intensity name
+  mutate(intensity_label = str_remove(intensity_label, " present")) %>%
+  # Remove the word "Potential" from intensity name
+  mutate(intensity_label = str_remove(intensity_label, "Potential ")) %>%
+  # Remove the word " percentage" from intensity name
+  mutate(intensity_label = str_remove(intensity_label, " percentage")) %>%
+  # Remove "Recent " from intensity name
+  mutate(intensity_label = str_remove(intensity_label, "Recent ")) %>%
+  # Replace " or " with "/" in intensity name
+  mutate(intensity_label = str_replace(intensity_label, " or ", "/")) %>%
+  # Add "No. " in front or "(%)" at the end
+  mutate(intensity_label = case_when(
+    intensity_type == "number" ~ paste0("No. ", str_to_lower(intensity_label)),
+    intensity_type == "percent" ~ paste0(str_to_sentence(intensity_label), " (%)"),
+    .default = intensity_label
+  )) %>%
+  arrange(class_id) %>%
+  mutate(intensity_label = factor(intensity_label,
+                                  levels = unique(intensity_label)))
+
+# Remove years with < 10,000 records
+oak <- oak %>%
+  group_by(yr) %>%
+  mutate(nrecords = n()) %>%
+  ungroup() %>%
+  filter(nrecords >= 10000) %>%
+  data.frame()
+
+min_yr <- min(oak$yr)
+max_yr <- max(oak$yr)
+
+# This file is too big - break up and save separate years
+oak_yrs <- sort(unique(oak$yr))
+for (oak_yr in oak_yrs) {
+  filter(oak, yr == oak_yr) %>%
+    write.csv(paste0("npn-data/intensity-oaks/intensity-oaks-", 
+                     oak_yr, ".csv"), row.names = FALSE)
+}

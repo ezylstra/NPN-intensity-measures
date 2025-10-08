@@ -10,3 +10,7 @@
 /weather-data/desert-plant-prism/
 !/weather-data/desert-plant-prism/**
 !/weather-data/desert-plant-prism/.gitkeep
+
+/npn-data/intensity-oaks/
+!/npn-data/intensity-oaks/**
+!/npn-data/intensity-oaks/.gitkeep

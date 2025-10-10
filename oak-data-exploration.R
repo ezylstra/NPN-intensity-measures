@@ -614,7 +614,7 @@ sii <- si %>%
   
   # Aggregate data for each plant-year
   fdi_py <- fdi %>%
-    group_by(common_name, individual_id, site_id, state, yr) %>%
+    group_by(common_name, individual_id, site_id, latitude, longitude, state, yr) %>%
     summarize(n_obs = n(),
               n_inphase = sum(phenophase_status),
               max_count = max(intensity_midpoint),
@@ -662,6 +662,69 @@ sii <- si %>%
               .groups = "keep") %>%
     data.frame()
   # All species have quite a bit of variation in max acorn counts
+
+  # Look more closely at spatial/temporal replication in dataset
+  fdi_siteyr <- fdi_py %>%
+    group_by(common_name, state, site_id, latitude, longitude, yr) %>%
+    summarize(n_plants = n_distinct(individual_id), .groups = "keep") %>%
+    data.frame()
+  fdi_site <- fdi_siteyr %>%
+    group_by(common_name, site_id, latitude, longitude) %>%
+    summarize(n_yrs = n(),
+              n_yrs_3min = sum(n_plants >= 3),
+              .groups = "keep") %>%
+    data.frame()
+  
+  # For each species, number of sites with x years where >= 3 trees monitored
+  fdi_site %>%
+    count(common_name, n_yrs_3min) %>%
+    filter(n_yrs_3min > 0)
+  
+  # Map by species
+  leaflet(fdi_site) %>% addTiles() %>%
+    addCircles(lng = ~longitude, lat = ~latitude, 
+               data = filter(fdi_site, common_name == "black oak", n_yrs_3min > 0), 
+               group = "black oak",
+               weight = ~n_yrs_3min*2, 
+               color = "black", 
+               fillOpacity = 1) %>%
+    addCircles(lng = ~longitude, lat = ~latitude, 
+               data = filter(fdi_site, common_name == "bur oak", n_yrs_3min > 0), 
+               group = "bur oak",
+               weight = ~n_yrs_3min*2, 
+               color = "purple", 
+               fillOpacity = 1)  %>%
+    addCircles(lng = ~longitude, lat = ~latitude, 
+               data = filter(fdi_site, common_name == "northern red oak", n_yrs_3min > 0), 
+               group = "northern red oak",
+               weight = ~n_yrs_3min*2, 
+               color = "red", 
+               fillOpacity = 1)  %>%
+    addCircles(lng = ~longitude, lat = ~latitude, 
+               data = filter(fdi_site, common_name == "pin oak", n_yrs_3min > 0), 
+               group = "pin oak",
+               weight = ~n_yrs_3min*2, 
+               color = "blue", 
+               fillOpacity = 1)  %>%
+    addCircles(lng = ~longitude, lat = ~latitude, 
+               data = filter(fdi_site, common_name == "white oak", n_yrs_3min > 0), 
+               group = "white oak",
+               weight = ~n_yrs_3min*2, 
+               color = "green", 
+               fillOpacity = 1)  %>%  
+    addLayersControl(overlayGroups = c("black oak",
+                                       "bur oak",
+                                       "northern red oak",
+                                       "pin oak",
+                                       "white oak"),
+                     options = layersControlOptions(collapse = FALSE))
+  
+  # Sites with a good number of years for black, northern red, and white oak
+  # in the NYC area and north (to Albany)
+  
+  
+# Not sure if stuff below is good or not.... 
+  
   
 # Regression models for max annual acorn count --------------------------------#
 # (will eventually want to check if changing min number of obs/yr affects results)
@@ -866,6 +929,7 @@ fri_py %>%
   m_r2 <- glm(mast ~ fyr*region, 
               data = filter(acorns2, yr > 2014), 
               family = binomial)
+  summary(m_r2)
   
   # Not sure that this model is very helpful -- don't we already know what years
   # were better than others? Would be more interesting to see whether the
@@ -874,5 +938,89 @@ fri_py %>%
   # Review Kelly et al. 2025 for ideas about weather?
   # Mean summer (June-July) temperatures 1 and 2 years prior
   
+  # Load weather data
+  summert <- summer_temps_mn %>%
+    mutate(jjtemp_0 = (jun + jul)/2) %>%
+    rename(yr = season)
+  # Append same year temps to acorns data
+  acorns2 <- acorns2 %>%
+    left_join(select(summert, site_id, yr, jjtemp_0), by = c("site_id", "yr"))
+  # Append temp data with 1- or 2-year lags
+  summert_lag1 <- summert %>%
+    mutate(yr = yr + 1) %>%
+    rename(jjtemp_1 = jjtemp_0)
+  summert_lag2 <- summert %>%
+    mutate(yr = yr + 2) %>%
+    rename(jjtemp_2 = jjtemp_0)
+  acorns2 <- acorns2 %>%
+    left_join(select(summert_lag1, site_id, yr, jjtemp_1),
+              by = c("site_id", "yr")) %>%
+    left_join(select(summert_lag2, site_id, yr, jjtemp_2),
+              by = c("site_id", "yr")) %>%
+    mutate(jjtemp_0_z = (jjtemp_0 - mean(jjtemp_0)) / sd(jjtemp_0),
+           jjtemp_1_z = (jjtemp_1 - mean(jjtemp_1)) / sd(jjtemp_1),
+           jjtemp_2_z = (jjtemp_2 - mean(jjtemp_2, na.rm = TRUE)) / sd(jjtemp_2, na.rm = TRUE))
   
+  # Temps in same year, last year, 2 years ago
+  m_rw012 <- glmer(mast ~ jjtemp_0_z + jjtemp_1_z + jjtemp_2_z + region + (1|id), 
+                   data = filter(acorns2, yr > 2014), 
+                   family = binomial,
+                   control = glmerControl(optimizer = "bobyqa"),
+                   nAGQ = 10)
+  summary(m_rw012)
+  # Positive effect of summer temperatures in same year
+  # Negative (but smaller) effect of summer temperatures in previous year
   
+  m_rw01 <- glmer(mast ~ jjtemp_0_z + jjtemp_1_z + region + (1|id), 
+                   data = filter(acorns2, yr > 2014), 
+                   family = binomial,
+                   control = glmerControl(optimizer = "bobyqa"),
+                   nAGQ = 10)
+  summary(m_rw01)
+  
+  m_rw01i <- glmer(mast ~ jjtemp_0_z * jjtemp_1_z + region + (1|id), 
+                   data = filter(acorns2, yr > 2014), 
+                   family = binomial,
+                   control = glmerControl(optimizer = "bobyqa"),
+                   nAGQ = 10)
+  summary(m_rw01i)
+  # No support for an interaction between temperatures
+  
+  m_rw01ii <- glmer(mast ~ jjtemp_0_z*region + jjtemp_1_z*region + (1|id), 
+                    data = filter(acorns2, yr > 2014), 
+                    family = binomial,
+                    control = glmerControl(optimizer = "bobyqa"),
+                    nAGQ = 10)
+  summary(m_rw01ii)
+  # No support for interactions between region and temperatures
+  
+  # Species differences?
+  acorns2$spp <- factor(acorns2$common_name)
+  m_rws01 <- glmer(mast ~ jjtemp_0_z + jjtemp_1_z + spp + region + (1|id),
+                   data = filter(acorns2, yr > 2014), 
+                   family = binomial,
+                   control = glmerControl(optimizer = "bobyqa"),
+                   nAGQ = 10)
+  summary(m_rws01)
+  # No support for adding species to model (though pin oak had lower probability
+  # of masting than other species)
+  
+  # What about about temporal autocorrelation? (if a tree produced a lot of
+  # acorns in one year is it more/less likely to produce a lot of acorns the 
+  # next year?)
+  
+  # Northern red oak in NYC:
+  acorns2 %>%
+    filter(region == "NYC") %>%
+    filter(common_name == "northern red oak") %>%
+    group_by(individual_id) %>%
+    mutate(maxc = max(max_count),
+           nyrs = n()) %>%
+    filter(maxc > 0 & nyrs > 1) %>%
+    ungroup() %>%
+    ggplot(aes(x = yr, y = log(max_count + 0.1), group = individual_id)) +
+    geom_jitter(aes(color = id), width = 0.1, height = 0.2) +
+    # geom_line(aes(color = id)) +
+    # facet_wrap(~id) +
+    theme_bw() +
+    theme(legend.position = "none")

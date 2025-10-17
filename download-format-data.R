@@ -953,6 +953,82 @@ for (i in 1:nrow(oak_spp)) {
                      oak_spp$species[i], ".csv"), row.names = FALSE)
 }
 
+# Download data for red maples ------------------------------------------------#
+
+maples <- npn_species() %>%
+  filter(genus == "Acer") %>%
+  select(species_id, common_name, genus, species, functional_type) %>%
+  data.frame() 
+
+# Download just red maple for now
+rema <- "rubrum"
+
+# Phenoclasses (just flowering, fruiting)
+php_classes <- c(6:8, 10, 12:13)
+
+rema_dl <- npn_download_status_data(
+  request_source = "erinz",
+  years = 2011:2025, 
+  pheno_class_ids = php_classes,
+  species_ids = maples$species_id[maples$species == rema]
+) %>%
+  data.frame()
+
+rema <- rema_dl %>%
+  # Create yr column
+  mutate(yr = year(observation_date)) %>%
+  data.frame()
+
+# Filter out phenophases or intensity categories that weren't used in 2024
+# or phenophases that don't have intensity categories associated with them
+# (for now, keeping phenophases that could have intensity categories, but
+# observers didn't report intensity values)
+rema <- rema %>%
+  filter(phenophase_id %in% ph_2024) %>%
+  filter(intensity_category_id %in% int_2024 | is.na(intensity_category_id))
+
+# Merge phenophase and intensity information with si data
+rema <- rema %>%
+  select(-observation_id) %>%
+  left_join(ph_merge, by = "phenophase_id") %>%
+  left_join(ivalues, by = c("intensity_category_id", "intensity_value"))
+# Create a new column with intensity labels (factor)
+rema <- rema %>%
+  # Remove anything in parentheses in intensity name
+  mutate(intensity_label = str_replace(intensity_name, " \\s*\\([^\\)]+\\)", "")) %>%
+  # Remove the word " present" from intensity name
+  mutate(intensity_label = str_remove(intensity_label, " present")) %>%
+  # Remove the word "Potential" from intensity name
+  mutate(intensity_label = str_remove(intensity_label, "Potential ")) %>%
+  # Remove the word " percentage" from intensity name
+  mutate(intensity_label = str_remove(intensity_label, " percentage")) %>%
+  # Remove "Recent " from intensity name
+  mutate(intensity_label = str_remove(intensity_label, "Recent ")) %>%
+  # Replace " or " with "/" in intensity name
+  mutate(intensity_label = str_replace(intensity_label, " or ", "/")) %>%
+  # Add "No. " in front or "(%)" at the end
+  mutate(intensity_label = case_when(
+    intensity_type == "number" ~ paste0("No. ", str_to_lower(intensity_label)),
+    intensity_type == "percent" ~ paste0(str_to_sentence(intensity_label), " (%)"),
+    .default = intensity_label
+  )) %>%
+  arrange(class_id) %>%
+  mutate(intensity_label = factor(intensity_label,
+                                  levels = unique(intensity_label)))
+
+# Way less data in 2011, so deleting
+rema <- rema %>%
+  filter(yr > 2011)
+
+# Save one csv per yr (not under version control because they're big)
+yrs <- sort(unique(rema$yr))
+for (yy in yrs) {
+  filter(rema, yr == yy) %>%
+    write.csv(paste0("npn-data/intensity-red-maple/intensity-rema-", 
+                     yy, ".csv"), row.names = FALSE)
+}
+
+
 # Download data for oaks in midwest (OLD) -------------------------------------#
 
 oak_spp <- npn_species() %>%

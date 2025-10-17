@@ -14,3 +14,7 @@
 /npn-data/intensity-oaks/
 !/npn-data/intensity-oaks/**
 !/npn-data/intensity-oaks/.gitkeep
+
+/npn-data/intensity-red-maple/
+!/npn-data/intensity-red-maple/**
+!/npn-data/intensity-red-maple/.gitkeep

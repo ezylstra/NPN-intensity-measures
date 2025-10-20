@@ -212,59 +212,88 @@ flowersw <- flowersw %>%
 
 # Plot intensity values -------------------------------------------------------#
 
-# # How much data each year?
-# flowersw %>%
-#   group_by(yr) %>%
-#   summarize(n_plants = n_distinct(id),
-#             n_sites = n_distinct(site_id),
-#             n_obs = n(),
-#             n_int_flowers = sum(!is.na(intensity_flowers)),
-#             n_int_open = sum(!is.na(intensity_open)),
-#             n_int_both = sum(!is.na(intensity_flowers) & !is.na(intensity_open))) %>%
-#   data.frame()
-# # Way more data in 2022-2025 than previous years
-# 
-# # Plot mean daily intensity values for 2022 (was going to use median, but 
-# # there are too many 0s)
-# flowersw %>%
-#   filter(yr == 2022) %>%
-#   group_by(doy) %>%
-#   summarize(flowers = mean(intensity_flowers, na.rm = TRUE),
-#             open = mean(intensity_open, na.rm = TRUE)) %>%
-#   mutate(log_flowers = ifelse(flowers == 0, log(flowers + 0.1), log(flowers))) %>%
-#   select(-flowers) %>%
-#   pivot_longer(cols = c(log_flowers, open),
-#                names_to = "type",
-#                values_to = "intensity") %>%
-#   filter(doy %in% 25:200) %>%
-#   ggplot(aes(x = doy, y = intensity)) +
-#   geom_line() +
-#   facet_grid(type ~ ., scales = "free_y")
-# # Messy. However, even here it looks like we can have moderate %open values
-# # late in the flowering season when the number of flowers decreases 
-# # Try weekly?
-# flowersw %>%
-#   filter(yr == 2022) %>%
-#   mutate(wk = as.numeric(week(observation_date))) %>%
-#   group_by(wk) %>%
-#   summarize(flowers = mean(intensity_flowers, na.rm = TRUE),
-#             open = mean(intensity_open, na.rm = TRUE)) %>%
-#   mutate(log_flowers = ifelse(flowers == 0, log(flowers + 0.1), log(flowers))) %>%
-#   select(-flowers) %>%
-#   pivot_longer(cols = c(log_flowers, open),
-#                names_to = "type",
-#                values_to = "intensity") %>%
-#   filter(wk %in% 9:25) %>%
-#   ggplot(aes(x = wk, y = intensity)) +
-#   geom_line() +
-#   facet_grid(type ~ ., scales = "free_y")
-# # Looking at weekly values averaged across individuals, this seems like less of 
-# # a problem...
+# How much data each year?
+flowersw %>%
+  group_by(yr) %>%
+  summarize(n_plants = n_distinct(id),
+            n_sites = n_distinct(site_id),
+            n_obs = n(),
+            n_int_flowers = sum(!is.na(intensity_flowers)),
+            n_int_open = sum(!is.na(intensity_open)),
+            n_int_both = sum(!is.na(intensity_flowers) & !is.na(intensity_open))) %>%
+  data.frame()
+# Way more data in 2022-2025 than previous years
+
+# Plot mean daily intensity values for 2022 (was going to use median, but
+# there are too many 0s)
+flowersw %>%
+  filter(yr == 2021) %>%
+  group_by(doy) %>%
+  summarize(flowers = mean(intensity_flowers, na.rm = TRUE),
+            open = mean(intensity_open, na.rm = TRUE)) %>%
+  mutate(log_flowers = ifelse(flowers == 0, log(flowers + 0.1), log(flowers))) %>%
+  select(-flowers) %>%
+  pivot_longer(cols = c(log_flowers, open),
+               names_to = "type",
+               values_to = "intensity") %>%
+  filter(doy %in% 25:200) %>%
+  ggplot(aes(x = doy, y = intensity)) +
+  geom_line() +
+  facet_grid(type ~ ., scales = "free_y")
+# Messy. However, even here it looks like we can have moderate %open values
+# late in the flowering season when the number of flowers decreases
+# Try weekly?
+flowersw %>%
+  filter(yr == 2022) %>%
+  mutate(wk = as.numeric(week(observation_date))) %>%
+  group_by(wk) %>%
+  summarize(flowers = mean(intensity_flowers, na.rm = TRUE),
+            open = mean(intensity_open, na.rm = TRUE)) %>%
+  mutate(nopen = ceiling(flowers * open / 100)) %>%
+  mutate(log_flowers = ifelse(flowers == 0, log(flowers + 0.1), log(flowers))) %>%
+  # select(-flowers) %>%
+  # pivot_longer(cols = c(log_flowers, open),
+  pivot_longer(cols = c(flowers, open, nopen),
+               names_to = "type",
+               values_to = "intensity") %>%
+  filter(wk %in% 9:25) %>%
+  ggplot(aes(x = wk, y = intensity)) +
+  geom_line() +
+  facet_grid(type ~ ., scales = "free_y")
+# Looking at weekly values averaged across individuals, this seems like less of
+# a problem...
+
+# Look at the weekly mean number of flowers and open flowers by year (calculated
+# coarsely by multiplying averages across individuals, not within individuals).
+# Can see peak in open flowers does not always coincide with flowers.
+wkcounts <- flowersw %>%
+  filter(yr >= 2016) %>%
+  mutate(wk = as.numeric(week(observation_date))) %>%
+  group_by(yr, wk) %>%
+  summarize(flowers = mean(intensity_flowers, na.rm = TRUE),
+            open = mean(intensity_open, na.rm = TRUE)) %>%
+  mutate(nopen = ceiling(flowers * open / 100)) %>%
+  pivot_longer(cols = c(flowers, nopen),
+               names_to = "type",
+               values_to = "intensity") %>%
+  mutate(type = ifelse(type == "nopen", "Open flowers", "Flowers")) %>%
+  filter(wk %in% 9:25) %>%
+  ggplot(aes(x = wk, y = intensity)) +
+  geom_line(aes(color = type)) +
+  facet_wrap(~yr) +
+  labs(x = "Week", y = "Mean count", color = "Structure") +
+  theme_bw() +
+  theme(legend.position = "inside",
+        legend.position.inside = c(0.78, 0.15))
+# ggsave("output/redbud-weekly-mn-counts.png",
+#        wkcounts,
+#        width = 6.5, height = 5, units = "in", dpi = 600)
 
 # What about looking at data for an individual?
 count(filter(flowersw, yr == 2022), id) %>% arrange(desc(n)) %>% head(10)
 flowersw %>%
   filter(yr == 2022 & id == 287224) %>%
+  filter(doy < 180) %>%
   mutate(flowers_log = ifelse(intensity_flowers == 0,
                               log(intensity_flowers + 0.1),
                               log(intensity_flowers))) %>%
@@ -274,6 +303,7 @@ flowersw %>%
                             log(nopen))) %>%
   select(-intensity_flowers) %>%
   pivot_longer(cols = c(flowers_log, intensity_open, nopen_log),
+  # pivot_longer(cols = c(intensity_flowers, intensity_open, nopen),
                names_to = "type",
                values_to = "intensity") %>%
   # filter(doy %in% 25:200) %>%
@@ -282,7 +312,7 @@ flowersw %>%
   facet_grid(type ~ ., scales = "free_y")
 # %open stays high as number of flowers drops off (at least for this ind, year)
 
-# Calculate estimated number of open flowers ----------------------------------#
+# Calculate estimated number of open flowers (by individual) ------------------#
 
 # Remove observations where either intensity value is NA, then calculate
 # (rounding values up to nearest integer)
@@ -321,50 +351,50 @@ peaksites <- distinct(of, site_id, lat, lon)
 
 # Basic summaries/visualizations of open flower abundance data ----------------#
 
-# # What do the values look like?
-# count(of, nopen)
-# # How much data do we have each year?
-# of %>%
-#   group_by(yr) %>%
-#   summarize(nplants = n_distinct(id),
-#             nobs = n()) %>%
-#   mutate(nobsperplant = nobs / nplants) %>%
-#   data.frame()
-# 
-# # Look at data from 2016 (first year with >= 10 plants)
-# ggplot(filter(of, yr == 2016), aes(x = doy, y = nopen)) +
-#   geom_line() +
-#   geom_point(color = "blue") +
-#   facet_wrap(~id)
-# # There are massive differences in max counts among plants within and across
-# # years.
-# ggplot(filter(of, yr == 2016), aes(x = doy, y = log(nopen + 0.1))) +
-#   geom_line() +
-#   geom_point(color = "blue") +
-#   facet_wrap(~id)
-# 
-# # Look at variation in max counts among years for a given plant
-# of %>%
-#   group_by(id) %>%
-#   summarize(nyrs = n_distinct(yr)) %>%
-#   arrange(desc(nyrs)) %>%
-#   head(20)
-# 
-# plant <- 42681 # 25365
-# of %>%
-#   filter(id == plant) %>%
-#   group_by(yr) %>%
-#   summarize(yrmax = max(nopen)) %>%
-#   data.frame()
-# of %>%
-#   filter(id == plant) %>%
-#   ggplot(aes(x = doy, y = nopen)) +
-#   geom_line() +
-#   geom_point(color = "steelblue3") +
-#   facet_wrap(~yr)
-# # Occasionally, max values increase over time, potentially indicating the plant
-# # was small/young in first years (eg, 46192). But most often, max values vary
-# # with no trend.
+# What do the values look like?
+count(of, nopen)
+# How much data do we have each year?
+of %>%
+  group_by(yr) %>%
+  summarize(nplants = n_distinct(id),
+            nobs = n()) %>%
+  mutate(nobsperplant = nobs / nplants) %>%
+  data.frame()
+
+# Look at data from 2016 (first year with >= 10 plants)
+ggplot(filter(of, yr == 2016), aes(x = doy, y = nopen)) +
+  geom_line() +
+  geom_point(color = "blue") +
+  facet_wrap(~id)
+# There are massive differences in max counts among plants within and across
+# years.
+ggplot(filter(of, yr == 2016), aes(x = doy, y = log(nopen + 0.1))) +
+  geom_line() +
+  geom_point(color = "blue") +
+  facet_wrap(~id)
+
+# Look at variation in max counts among years for a given plant
+of %>%
+  group_by(id) %>%
+  summarize(nyrs = n_distinct(yr)) %>%
+  arrange(desc(nyrs)) %>%
+  head(20)
+
+plant <- 42681 # 25365
+of %>%
+  filter(id == plant) %>%
+  group_by(yr) %>%
+  summarize(yrmax = max(nopen)) %>%
+  data.frame()
+of %>%
+  filter(id == plant) %>%
+  ggplot(aes(x = doy, y = nopen)) +
+  geom_line() +
+  geom_point(color = "steelblue3") +
+  facet_wrap(~yr)
+# Occasionally, max values increase over time, potentially indicating the plant
+# was small/young in first years (eg, 46192). But most often, max values vary
+# with no trend.
 
 # Create weather covariates for each site -------------------------------------#
 # All data from PRISM (temps in degC and precip in mm)
@@ -554,13 +584,24 @@ ofmax %>%
 # Create weather variables and attach to phenology data
   
   # Winter precip (Dec-Feb) and preceding 6-month precip (Nov-Apr)
+  # For now, will relativize values by 10-year mean at each site (to deal with
+  # slight negative correlations with latitude)
   ppt <- ppt %>%
     mutate(ppt_win = dec + jan + feb,
            ppt_6mo = nov + dec + jan + feb + mar + apr) %>%
     select(site_id, season, ppt_win, ppt_6mo) %>%
     rename(yr = season)
+  ppt_site <- ppt %>%
+    group_by(site_id) %>%
+    summarize(ppt_win_mn = mean(ppt_win),
+              ppt_6mo_mn = mean(ppt_6mo))
+  ppt <- ppt %>%
+    left_join(ppt_site, by = "site_id") %>%
+    mutate(ppt_win_anom = ppt_win - ppt_win_mn,
+           ppt_6mo_anom = ppt_6mo - ppt_6mo_mn)
   ofmax <- ofmax %>%
-    left_join(ppt, by = c("site_id", "yr"))
+    left_join(select(ppt, -c(ppt_win_mn, ppt_6mo_mn)),
+              by = c("site_id", "yr"))
   
   # Winter min temperature
   # For now, will relativize values by 10-year mean at each site (to deal with 
@@ -575,7 +616,7 @@ ofmax %>%
   ofmax <- ofmax %>%
     left_join(select(tmin_win, -tmin_mn), by = c("site_id", "yr"))  
   
-  # For GDD values, we need to figure out what date to accumulate GDD through
+  # For GDD values, we need to figure out what date to accumulate GDD through.
   # We could use the predicted mean DOY plants at a given latitude were reported
   # with open flowers.
   ggplot(data = filter(of, status_open == 1), aes(x = lat, y = doy)) + 
@@ -598,7 +639,9 @@ ofmax %>%
 
 ofmax <- ofmax %>%
   mutate(ppt_win_z = (ppt_win - mean(ppt_win)) / sd(ppt_win),
+         ppt_win_anom_z = (ppt_win_anom - mean(ppt_win_anom)) / sd(ppt_win_anom),
          ppt_6mo_z = (ppt_6mo - mean(ppt_6mo)) / sd(ppt_6mo),
+         ppt_6mo_anom_z = (ppt_6mo_anom - mean(ppt_6mo_anom)) / sd(ppt_6mo_anom),
          tmin_win_z = (tmin_win - mean(tmin_win)) / sd(tmin_win),
          tmin_win_anom_z = (tmin_win_anom - mean(tmin_win_anom)) / sd(tmin_win_anom),
          agdd_z = (agdd_jan1 - mean(agdd_jan1)) / sd(agdd_jan1),
@@ -608,7 +651,7 @@ ofmax <- ofmax %>%
 
 # Correlations
 ofmax %>%
-  select(ppt_win, ppt_6mo, tmin_win, tmin_win_anom, 
+  select(ppt_win_anom, ppt_6mo_anom, tmin_win_anom, 
          agdd_jan1, lat, lon, elev) %>%
   cor() %>%
   round(2)
@@ -623,12 +666,14 @@ summary(m1)
 # Random year effect tiny.
 
 # Precipitation effects
-m_pptwin <- lmer(log(maxcount) ~ lat_z + elev_z + ppt_win_z + (1|fyr) + (1|site_id), 
+m_pptwin <- lmer(log(maxcount) ~ lat_z + elev_z + ppt_win_anom_z + (1|fyr) + (1|site_id), 
                  data = ofmax)
 summary(m_pptwin) # Positive, close to signif
-m_ppt6mo <- lmer(log(maxcount) ~ lat_z + elev_z + ppt_6mo_z + (1|fyr) + (1|site_id), 
+m_ppt6mo <- lmer(log(maxcount) ~ lat_z + elev_z + ppt_6mo_anom_z + (1|fyr) + (1|site_id), 
                  data = ofmax)
-summary(m_ppt6mo) # Positive, close to signif (slightly bigger effect than winter ppt)
+summary(m_ppt6mo)
+AIC(m1, m_pptwin, m_ppt6mo)
+# Winter precip slightly better
 
 # Winter min temp effects
 m_tminwin <- lmer(log(maxcount) ~ lat_z + elev_z + tmin_win_anom_z + 
@@ -646,24 +691,20 @@ m_agddi <- lmer(log(maxcount) ~ lat_z * agdd_z + elev_z + (1|fyr) + (1|site_id),
 summary(m_agddi) # Interaction effect is ~ 0, so no help.
 
 # Combine:
-m_all <- lmer(log(maxcount) ~ lat_z + ppt_6mo_z + tmin_win_anom_z + agdd_z +
+m_all <- lmer(log(maxcount) ~ lat_z + ppt_win_anom_z + tmin_win_anom_z + agdd_z +
                 (1|fyr) + (1|site_id), 
               data = ofmax)
 summary(m_all)
 confint(m_all)
-# Latitude signif effect, 6-mo ppt is marginally signif (positive). Winter
-# min temps and AGDD not signif (|t| < 1.1)
+# Latitude signif effect, winter ppt is signif (positive). Winter min temps have
+# negative effect but not strictly significant, and AGDD not significant
 
-# Combine, removing yearly RE (which had variance near 0):
-m_all2 <- lmer(log(maxcount) ~ lat_z + ppt_6mo_z + tmin_win_anom_z + agdd_z +
-                (1|site_id), 
+# Remove AGDD:
+m_best <- lmer(log(maxcount) ~ lat_z + ppt_win_anom_z + tmin_win_anom_z +
+                (1|fyr) + (1|site_id), 
               data = ofmax)
-summary(m_all2)
-confint(m_all2)
-# Latitude signif effect, 6-mo ppt is signif (positive). 
-# Winter min temps and AGDD not close to signif
-
-# Could also bin counts and then use ordinal regression models....
+summary(m_best)
+confint(m_best)
 
 # Evaluating seasonal variation in counts by plant-year -----------------------# 
 
@@ -764,7 +805,7 @@ summary(mpeak1)
   
   # Precip variables
   of_plantyr30 <- of_plantyr30 %>%
-    left_join(ppt, by = c("site_id", "yr"))
+    left_join(select(ppt, -c(ppt_win_mn, ppt_6mo_mn)), by = c("site_id", "yr"))
 
   # Winter min temperature
   of_plantyr30 <- of_plantyr30  %>%
@@ -789,8 +830,8 @@ summary(mpeak1)
 
 # Correlations
 of_plantyr30 %>%
-  select(ppt_win, ppt_6mo, tmin_win, tmin_win_anom, 
-         agdd90, agdd90_anom, lat, lon, elev) %>%
+  select(ppt_win_anom, ppt_6mo_anom, tmin_win_anom, 
+         agdd90_anom, lat, lon, elev) %>%
   cor() %>%
   round(2)
 # Moderate positive correlation (0.62) between winter temperature and spring
@@ -799,24 +840,26 @@ of_plantyr30 %>%
 
 of_plantyr30 <- of_plantyr30 %>%
   mutate(ppt_win_z = (ppt_win - mean(ppt_win)) / sd(ppt_win),
+         ppt_win_anom_z = (ppt_win_anom - mean(ppt_win_anom)) / sd(ppt_win_anom),
          ppt_6mo_z = (ppt_6mo - mean(ppt_6mo)) / sd(ppt_6mo),
+         ppt_6mo_anom_z = (ppt_6mo_anom - mean(ppt_6mo_anom)) / sd(ppt_6mo_anom),
          tmin_win_z = (tmin_win - mean(tmin_win)) / sd(tmin_win),
          tmin_win_anom_z = (tmin_win_anom - mean(tmin_win_anom)) / sd(tmin_win_anom),
          agdd90_z = (agdd90 - mean(agdd90)) / sd(agdd90),
          agdd90_anom_z = (agdd90_anom - mean(agdd90_anom)) / sd(agdd90_anom))  
 
 # Models with weather variables 
-mpeak_pptwin <- lmer(peak ~ lat_z + elev_z + ppt_win_z + (1|fyr) + (1|site_id), 
+mpeak_pptwin <- lmer(peak ~ lat_z + elev_z + ppt_win_anom_z + (1|fyr) + (1|site_id), 
                      data = of_plantyr30)
-summary(mpeak_pptwin) # Not significant
-mpeak_ppt6mo <- lmer(peak ~ lat_z + elev_z + ppt_6mo_z + (1|fyr) + (1|site_id), 
+summary(mpeak_pptwin) # Positive effect, so more winter precip = later peak
+mpeak_ppt6mo <- lmer(peak ~ lat_z + elev_z + ppt_6mo_anom_z + (1|fyr) + (1|site_id), 
                      data = of_plantyr30)
 summary(mpeak_ppt6mo) # Not significant  
   
 mpeak_tminwin <- lmer(peak ~ lat_z + elev_z + tmin_win_anom_z +
                         (1|fyr) + (1|site_id),
                       data = of_plantyr30)
-summary(mpeak_tminwin) # Signif (negative) effect. So warmer winter associated 
+summary(mpeak_tminwin) # Negative effect. So warmer winter associated 
 # with an earlier peak.
 
 mpeak_agdd90 <- lmer(peak ~ lat_z + elev_z + agdd90_anom_z + (1|fyr) + (1|site_id),
@@ -826,14 +869,19 @@ summary(mpeak_agdd90) # Signif (negative) effect. So warmer than average spring
 
 # Combine weather variables (though need to be a bit wary about correlations)
 mpeak_all <- lmer(peak ~ lat_z + elev_z + agdd90_anom_z + tmin_win_anom_z +
-                    (1|fyr) + (1|site_id),
+                    ppt_win_anom_z + (1|fyr) + (1|site_id),
                   data = of_plantyr30)
-summary(mpeak_all) # After accounting for spring AGDD anomaly, winter temp
-# effect wasn't significant. 
+summary(mpeak_all) 
+confint(mpeak_all)
+# AGDD effect important
+# Winter temperatures not significant after accounting for all else
+# Winter precipitation marginally signficant
 
-# So AGDD model with lat, elev, and all REs best (of those I tried)
-summary(mpeak_agdd90)
-confint(mpeak_agdd90)
+mpeak_best <- lmer(peak ~ lat_z + elev_z + agdd90_anom_z + ppt_win_anom_z + 
+                     (1|fyr) + (1|site_id),
+                   data = of_plantyr30)
+summary(mpeak_best) 
+confint(mpeak_best)
 
 # How do peak dates compare to first yeses for open flowers? ------------------#
 # Need to restrict geographically (lon > -100 and US/Ontario only)

@@ -978,7 +978,7 @@ m_grsm_gdd <- ordbetareg(prop ~ agddz + (1 + agddz|spp) + (1|id),
                          backend = "cmdstanr")
 #
 # save(m_grsm_gdd, file = "output/grsm-gdd-model.RData")
-#
+# load("output/grsm-gdd-model.RData")
 
 # Expected canopy fullness for each species, ignoring individual REs
 gdd_spp <- m_grsm_gdd %>%
@@ -1001,6 +1001,26 @@ plot_gdd_spp
 # Plot seems interesting. Sugar and striped maples are early (very similar 
 # curves) then red maple, then basswood and red oak reach 50% (though basswood 
 # starts later and ramps up faster), then beech, which fills slowly.
+
+# Same plot, but putting GDD on original scale:
+gdd_spp <- gdd_spp %>%
+  mutate(agdd = (agddz * sd(grsm$agdd) + mean(grsm$agdd)))
+plot_gdd_spp2 <- ggplot(filter(gdd_spp, agdd < 1550 & agdd > 400), 
+                        aes(x = agdd, y = .epred)) +
+  stat_lineribbon(aes(color = spp, fill = after_scale(alpha(color, 0.2))), 
+                  linewidth = 0.5, .width = 0.80) +
+  geom_hline(yintercept = 0.5, linetype = "dotted") +
+  # stat_lineribbon() +
+  # scale_fill_brewer(palette = "Blues") +
+  # facet_wrap(~ spp) +
+  labs(x = "GDD", y = "Predicted canopy fullness (%)", color = "Species",
+       fill = "Species") +
+  theme_bw() +
+  theme(legend.position = "bottom") 
+plot_gdd_spp2
+# ggsave("output/grsm-canopy-by-gdd.png",
+#        plot_gdd_spp2,
+#        width = 6.5, height = 4, units = "in", dpi = 600)
 
 # Multi-species model with doy and year
 grsm <- grsm %>%
@@ -1050,7 +1070,8 @@ m_grsm_doy2 <- ordbetareg(prop ~ doyz + (1 + doyz|fyr) + (1 + doyz|spp) + (1|id)
                           backend = "cmdstanr")
 end_time <- Sys.time()
 end_time - start_time
-save(m_grsm_doy2, file = "output/grsm-doy-randomyr-model.RData")
+# save(m_grsm_doy2, file = "output/grsm-doy-randomyr-model.RData")
+# load("output/grsm-doy-randomyr-model.RData")
 #
 summary(m_grsm_doy2)
 # Took 9.5 hours
@@ -1075,6 +1096,26 @@ plot_doy_mn_spp <- ggplot(filter(doy_mn_spp, doyz > -1 & doyz < 2),
   theme(legend.position = "bottom")
 plot_doy_mn_spp
 
+# Same plot, but putting DOY on original scale:
+doy_mn_spp <- doy_mn_spp %>%
+  mutate(doy = (doyz * sd(grsm$day_of_year) + mean(grsm$day_of_year)))
+plot_doy_mn_spp2 <- ggplot(filter(doy_mn_spp, doy > 80 & doy < 160), 
+                           aes(x = doy, y = .epred)) +
+  stat_lineribbon(aes(color = spp, fill = after_scale(alpha(color, 0.2))), 
+                  linewidth = 0.5, .width = 0.80) +
+  geom_hline(yintercept = 0.5, linetype = "dotted") +
+  # stat_lineribbon() +
+  # scale_fill_brewer(palette = "Blues") +
+  # facet_wrap(~ spp) +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)", color = "Species",
+       fill = "Species") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_mn_spp2
+# ggsave("output/grsm-canopy-by-doy.png",
+#        plot_doy_mn_spp2,
+#        width = 6.5, height = 4, units = "in", dpi = 600)
+
 # Expected canopy fullness for each species and year, ignoring individual REs
 doy_yr_spp <- m_grsm_doy2 %>%
   epred_draws(newdata = expand_grid(doyz = seq(-2.12, 2.24, length = 100),
@@ -1095,6 +1136,25 @@ plot_doy_yr_spp <- ggplot(filter(doy_yr_spp, doyz > -1 & doyz < 2),
   theme_bw() +
   theme(legend.position = "bottom")
 plot_doy_yr_spp
+
+# Same plot, but putting DOY on original scale:
+doy_yr_spp <- doy_yr_spp %>%
+  mutate(doy = (doyz * sd(grsm$day_of_year) + mean(grsm$day_of_year)))
+plot_doy_yr_spp2 <- ggplot(filter(doy_yr_spp, doy > 80 & doy < 160), 
+                           aes(x = doy, y = .epred)) +
+  stat_lineribbon(aes(color = spp, fill = after_scale(alpha(color, 0.2))), 
+                  linewidth = 0.5, .width = 0.80) +
+  geom_hline(yintercept = 0.5, linetype = "dotted") +
+  # stat_lineribbon() +
+  # scale_fill_brewer(palette = "Blues") +
+  facet_wrap(~ fyr, ncol = 2) +
+  labs(x = "Day of year", y = "Predicted canopy fullness (%)", color = "Species",
+       fill = "Species") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+# ggsave("output/grsm-canopy-by-doy-yr.png",
+#        plot_doy_yr_spp2,
+#        width = 6.5, height = 8, units = "in", dpi = 600)
 
 # Compare GDD, DOY models for GRSM --------------------------------------------#
 

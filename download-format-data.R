@@ -798,7 +798,7 @@ redbud_spp <- npn_species() %>%
   data.frame() %>%
   filter(common_name == "eastern redbud")
 
-intensity_file <- list.files(path = "npn-data",
+intensity_file <- list.files(path = "npn-data/intensity-redbud",
                              pattern = "intensity-redbud",
                              full.names = TRUE)
 

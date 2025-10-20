@@ -3,7 +3,6 @@
 
 library(tidyverse)
 library(leaflet)
-library(elevatr)
 library(sf)
 library(terra)
 library(lme4)
@@ -105,52 +104,6 @@ sites <- sites %>%
   filter(site_id != qcsite)
 si <- si %>%
   filter(site_id %in% unique(sites$site_id))
-
-# Some sites are missing elevation - will grab elevations for all sites using
-# the elevatr package
-elev_fill <- sites %>%
-  distinct(site_id, lat, lon) %>%
-  st_as_sf(coords = c("lon", "lat"), crs = 4326)
-elev_fill <- get_elev_point(locations = elev_fill, src = "epqs")
-elev_fill <- data.frame(elev_fill) %>%
-  mutate(elev_new = round(elevation)) %>%
-  select(site_id, elev_new)
-elevations <- sites %>%
-  left_join(elev_fill, by = "site_id")
-
-# Woah! There are a whole bunch of sites in NN database where the elevation
-# listed appears to be in feet rather than meters.
-elevations <- elevations %>%
-  mutate(convert = round(elev/3.28084)) %>%
-  mutate(prob = ifelse(abs(elev_new - convert) < abs(elev_new - elev), 1, 0))
-
-# elevations %>%
-#   select(site_id, lat, lon, elev, elev_new, prob) %>%
-#   rename(elev_original = elev,
-#          elev_USGS = elev_new, 
-#          problem = prob) %>%
-#   write.csv(file = "C:/Users/erin/Desktop/elevation-issues.csv", 
-#             row.names = FALSE)
-
-ggplot(elevations, aes(x = elev, y = elev_new)) +
-  geom_point(aes(color = factor(prob))) +
-  scale_color_manual(values = c("blue", "red")) +
-  geom_abline(slope = 1, intercept = 0, color = "blue") +
-  geom_abline(slope = 1/3.28084, intercept = 0, color = "red")
-
-count(elevations, prob)
-# >11% of sites have elevation reported in feet
-
-# Also, one reported elevation just seems to be wrong (listed as 257 m, should
-# be 634 m):
-filter(elevations, elev < 400 & elev_new > 600)
-
-# Given all this, we'll use elevations from the R package for all
-sites <- sites %>%
-  left_join(select(elevations, site_id, elev_new), by = "site_id") %>% 
-  select(-elev) %>%
-  rename(elev = elev_new)
-rm(elevations)
 
 # Combine observations from both flower phenophases ---------------------------#
 

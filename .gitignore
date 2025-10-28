@@ -11,6 +11,10 @@
 !/weather-data/desert-plant-prism/**
 !/weather-data/desert-plant-prism/.gitkeep
 
+/weather-data/saguaros/
+!/weather-data/saguaros/**
+!/weather-data/saguaros/.gitkeep
+
 /npn-data/intensity-oaks/
 !/npn-data/intensity-oaks/**
 !/npn-data/intensity-oaks/.gitkeep

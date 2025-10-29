@@ -1,6 +1,6 @@
 # Floral abundance, saguaros
 # ER Zylstra
-# 28 October 2025
+# 29 October 2025
 
 library(rnpn)
 library(dplyr)
@@ -10,6 +10,7 @@ library(tidyr)
 library(ggplot2)
 library(ordinal)
 library(terra)
+library(tidyterra)
 
 # Load shapefile with US state boundaries -------------------------------------#
 
@@ -272,17 +273,9 @@ sites <- flowers %>%
 # write.table(select(sites, lat, lon, site), "weather-data/saguaro-sites.csv", 
 #             sep = ",", row.names = FALSE, col.names = FALSE)
 
-# Elevation
-ggplot(sites, aes(x = elev)) +
-  geom_histogram(bins = 20, width = 0.8)
-
-# Geographic coordinates and plant-years
-ggplot(sites, aes(x = lon, y = lat, size = n_plantyrs)) +
-  geom_point()
-
 # Process and attach weather data ---------------------------------------------#
 
-# Daily data
+# Load daily data
 prism_files <- list.files("weather-data/saguaros",
                           full.names = TRUE,
                           pattern = "stable|provisional")
@@ -300,20 +293,23 @@ for (i in 1:length(prism_files)) {
 }
 rm(prism1)
 
+# Summarize by month
 weather <- weather %>%
   select(-c(lon, lat, elev)) %>%
-  mutate(date = ymd(date),
+  mutate(tmean = (tmin + tmax) / 2,
+         date = ymd(date),
          yr = year(date),
          month = month(date)) %>%
   group_by(site, yr, month) %>%
   summarize(tmin_mn = mean(tmin),
             tmax_mn = mean(tmax),
+            tmean_mn = mean(tmean),
             ppt = sum(ppt),
             .groups = "keep") %>%
   filter(site %in% sites$site) %>%
   data.frame()
 
-# 30-year (1991-2020) monthly normals:
+# Load 30-year (1991-2020) monthly normals:
 normsfile <- list.files("weather-data/saguaros/", 
                         full.names = TRUE,
                         pattern = "30yr")
@@ -332,9 +328,12 @@ norms <- read.csv(normsfile,
   # Precip in fall (SON)
   # Precip, 6 mo (fall + winter; Sep-Feb)
   # Precip, 9 mo (summer + fall + winter; Jun-Feb)
+  # Annual mean temperature
+  # Annual precipitation
 weathervars <- weather %>%
   rename(tmin = tmin_mn,
-         tmax = tmax_mn) %>%
+         tmax = tmax_mn,
+         tmean = tmean_mn) %>%
   # Create seasonyr to match up with flowering year
   mutate(seasonyr = ifelse(month %in% 6:12, yr + 1, yr)) %>%
   mutate(season = case_when(
@@ -348,94 +347,168 @@ weathervars <- weather %>%
             ppt_fa = sum(ppt[season == "fa"]),
             ppt_6 = sum(ppt[season %in% c("fa", "wi")]),
             ppt_9 = sum(ppt[season != "sp"]),
+            ann_temp = mean(tmean),
+            ann_ppt = sum(ppt),
             .groups = "keep") %>%
   filter(seasonyr %in% unique(flowers$yr)) %>%
   data.frame()
 
 # Calculate 30-year normals
 normvars <- norms %>%
+  mutate(tmean30 = (tmin30 + tmax30) / 2) %>%
   group_by(site) %>%
   summarize(tmin_wi_30 = mean(tmin30[month %in% c(12, 1:2)]),
             ppt_fa_30 = sum(ppt30[month %in% 9:11]),
             ppt_6_30 = sum(ppt30[month %in% c(9:12, 1:2)]),
-            ppt_9_30 = sum(ppt30[month %in% c(6:12, 1:2)])) %>%
+            ppt_9_30 = sum(ppt30[month %in% c(6:12, 1:2)]),
+            ann_temp_30 = mean(tmean30),
+            ann_ppt_30 = sum(ppt30)) %>%
   data.frame()
 
-# Merge normals with annual weather and calculate anomalies
+# Merge normals with annual weather and calculate anomalies for temperature
+# and % of 30-year normals for precipitation. (If used anomalies for precip
+# then you see the range of anomalies is smaller for low elevation/drier sites)
 weathervars <- weathervars %>%
   left_join(normvars, by = "site") %>%
   mutate(tmin_wi_a = tmin_wi - tmin_wi_30,
-         ppt_fa_a = ppt_fa - ppt_fa_30,
-         ppt_6_a = ppt_6 - ppt_6_30,
-         ppt_9_a = ppt_9 - ppt_9_30)
+         ppt_fa_p = (ppt_fa / ppt_fa_30) * 100,
+         ppt_6_p = (ppt_6 / ppt_6_30) * 100,
+         ppt_9_p = (ppt_9 / ppt_9_30) * 100)
 
-# Add weather data to flowering dataset (and standardize)
+# Add climate normals to sites dataframe amd look at patterns with elevation
+sites <- sites %>%
+  left_join(normvars, by = "site")
+ggplot(sites) +
+  geom_point(aes(x = ann_temp_30, y = ann_ppt_30, color = elev),
+             size = 2) +
+  scale_color_viridis_c() +
+  labs(x = "Mean annual temperature (degC)", 
+       y = "Mean annual precipitation (mm)",
+       color = "Elevation (m)") +
+  theme_bw()
+
+# Will remove single site that is 350 m higher elevation than the rest 
+# because climate there is much different (wetter and colder). Site only had
+# 2 years of data for one saguaro anyways.
+sites <- sites %>%
+  filter(elev < 1100)
+flowers <- flowers %>%
+  filter(elev < 1100)
+
+# Add weather data to flowering dataset (and standardize weather, elev data)
 flowers <- flowers %>%
   left_join(weathervars, by = c("site" = "site", "yr" = "seasonyr")) %>%
   mutate(tmin_wi_z = (tmin_wi_a - mean(tmin_wi_a)) / sd(tmin_wi_a),
-         ppt_fa_z = (ppt_fa_a - mean(ppt_fa_a)) / sd(ppt_fa_a),
-         ppt_6_z = (ppt_6_a - mean(ppt_6_a)) / sd(ppt_6_a),
-         ppt_9_z = (ppt_9_a - mean(ppt_9_a)) / sd(ppt_9_a))
+         ppt_fa_z = (ppt_fa_p - mean(ppt_fa_p)) / sd(ppt_fa_p),
+         ppt_6_z = (ppt_6_p - mean(ppt_6_p)) / sd(ppt_6_p),
+         ppt_9_z = (ppt_9_p - mean(ppt_9_p)) / sd(ppt_9_p),
+         elev_z = (elev - mean(elev)) / sd(elev))
+
+# Plot temp, precip z-scores by elevation
+flowers %>%
+  mutate(elev_cats = cut(elev, breaks = c(0, 600, 900, 1100),
+                         labels = c("<600", "600-900", ">900"))) %>%
+  ggplot(aes(x = ppt_9_z, y = tmin_wi_z, color = elev)) +
+  geom_point() +
+  facet_grid(~elev_cats) +
+  scale_color_viridis_c() +
+  theme_bw()
+# All sites had average - hotter than average winters, but only the mid-elev
+# sites had cooler than average winters.
+# At the high elevation sites, there were no years when precipitation was 
+# much lower than average. At all other sites, precipitation values look good.
+# This has implications for prediction plot....
+
+# Elevation/location figures --------------------------------------------------#
+
+# Elevation
+ggplot(sites, aes(x = elev)) +
+  geom_histogram(bins = 30, fill = "gray") +
+  labs(x = "Elevation (m)", y = "No. sites") +
+  geom_vline(aes(xintercept = mean(elev)), color = "steelblue4",
+             linetype = "dashed") +
+  geom_vline(aes(xintercept = 1074), color = "salmon4", linetype = "dashed") +
+  annotate(geom = "text", label = "Mean", color = "steelblue4", 
+           x = mean(sites$elev) - 5, y = 9, hjust = 1) +
+  annotate(geom = "text", label = "Renzi", color = "salmon4", 
+           x = 1074 - 5, y = 9, hjust = 1) +
+  theme_bw()
+
+# Geographic coordinates and plant-years
+ggplot(filter(states, STUSPS == "AZ")) +
+  geom_spatvector(fill = "transparent") +
+  geom_spatvector(data = vect(sites, geom = c("lon", "lat"), crs = "epsg:4326"),
+                  aes(size = n_plantyrs), color = "steelblue4", alpha = 0.5) +
+  labs(size = "No. plant-years") +
+  theme_bw()
+# Would be better to have this overlaid on an elevation gradient...
 
 # Run ordinal models ----------------------------------------------------------#
 
-# Standardize site elevations, so we can add that into models
-flowers <- flowers %>%
-  mutate(elev_z = (elev - mean(elev)) / sd(elev))
+# Using 3 count categories because then sample sizes are a bit more equitable
 
+# Because we'll ultimately want to use clmm2 models to make predictions (if we 
+# don't go a Bayesian route), we're restricted to one random effect. We'll use
+# site.
 
-######## THINK IT MIGHT BE BETTER TO USE 3 COUNT CATEGORIES RATHER THAN 4
-######## ADJUST MODELS BELOW ACCORDINGLY.
-# sample sizes for 4 categories: 43, 20, 172, 125
-# sample sizes for 3 categories: 63, 172, 125 (combining none + few)
-
-
-
-# Model with year and plant, site random effects
-m_yr <- clmm(abund4 ~ fyr + (1|id) + (1|site), Hess = TRUE, data = flowers)
+# Model with year (not trend) effects0
+m_yr <- clmm2(abund3 ~ fyr, random = factor(site), Hess = TRUE, data = flowers)
 summary(m_yr)
 
 # Try different precip models
-m_ppt_fa <- clmm(abund4 ~ ppt_fa_z + (1|id) + (1|site), Hess = TRUE,
+m_ppt_fa <- clmm2(abund3 ~ ppt_fa_z, random = factor(site), Hess = TRUE,
+                  data = flowers)
+m_ppt_6 <- clmm2(abund3 ~ ppt_6_z, random = factor(site), Hess = TRUE,
                  data = flowers)
-m_ppt_6 <- clmm(abund4 ~ ppt_6_z + (1|id) + (1|site), Hess = TRUE,
-                data = flowers)
-m_ppt_9 <- clmm(abund4 ~ ppt_9_z + (1|id) + (1|site), Hess = TRUE,
-                data = flowers)
+m_ppt_9 <- clmm2(abund3 ~ ppt_9_z, random = factor(site), Hess = TRUE,
+                 data = flowers)
 AIC(m_ppt_fa, m_ppt_6, m_ppt_9, m_yr)
 # 9-mo ppt model better than other ppt models (though not as good as year)
 summary(m_ppt_9)
 # Negative effect of precipitation
 
 # Winter minimum temperatures
-m_tmin <- clmm(abund4 ~ tmin_wi_z + (1|id) + (1|site), Hess = TRUE,
-               data = flowers)
+m_tmin <- clmm2(abund3 ~ tmin_wi_z, random = factor(site), Hess = TRUE,
+                data = flowers)
 summary(m_tmin) 
 # Negative effect of winter temperatures
 
 # Precipitation and winter temperatures
-m_ppt9_tmin <- clmm(abund4 ~ ppt_9_z * tmin_wi_z + (1|id) + (1|site), 
-                    Hess = TRUE, data = flowers)
+m_ppt9_tmin <- clmm2(abund3 ~ ppt_9_z * tmin_wi_z, random = factor(site), 
+                     Hess = TRUE, data = flowers)
 summary(m_ppt9_tmin)
+# All significant, negative effects (including interaction)
 
 # Precipitation and winter temperatures, allowing effects to vary with elevation
-m_3way <- clmm(abund4 ~ ppt_9_z * tmin_wi_z * elev_z + (1|id) + (1|site), 
-               Hess = TRUE, data = flowers)
-summary(m_3way)
+m_full <- clmm2(abund3 ~ ppt_9_z * tmin_wi_z * elev_z, random = factor(site), 
+                Hess = TRUE, data = flowers)
+summary(m_full)
+# Most interaction effects that include elevation aren't significant, but at
+# one is close (elev*temp; P = 0.08). Still worth including elevation to 
+# highlight how weather effects vary regionally.
+anova(m_full, m_ppt9_tmin)
+# Chi-squared not signif (P = 0.19), but -logLik lower with full model
 
-# Need to use clmm2 to make predictions, and that function only allows one
-# random effect:
-m_3way2 <- clmm2(abund4 ~ ppt_9_z * tmin_wi_z * elev_z, random = factor(site), 
-                 nAGQ = 10, Hess = TRUE, data = flowers)
-summary(m_3way2)
-# Higher-level interaction effects aren't significant, but still worth 
-# including to highlight how weather effects vary regionally.
+# Make predictions ------------------------------------------------------------#
+
+# Won't make predictions for colder than average winters since that only 
+# occurred at middle elevation sites (not high or low elev). 
+
+# For high elevation sites, we could restrict precip z-scores to observed range 
+# since there were no observations in abnormally dry years, but this does make
+# things look a little odd. Maybe keep in (and extrapolate for now), but
+# 
+
+# See ranges in weather z-scores
+summary(flowers$tmin_wi_z)
+summary(flowers$ppt_9_z)
+highelev_ppt <- range(flowers$ppt_9_z[flowers$elev > 900]) %>% round(1)
 
 # Create dataframe for prediction
 newdat <- expand.grid(
-  abund4 = unique(flowers$abund4),
+  abund3 = unique(flowers$abund3),
   elev_z = c(min(flowers$elev_z), 0, max(flowers$elev_z)),
-  tmin_wi_z = c(min(flowers$tmin_wi_z), 0, max(flowers$tmin_wi_z)),
+  tmin_wi_z = c(0, 2),
   ppt_9_z = seq(min(flowers$ppt_9_z), max(flowers$ppt_9_z), length = 100),
   KEEP.OUT.ATTRS = FALSE
 )
@@ -443,36 +516,108 @@ newdat <- expand.grid(
 # given 9-month precipitation for cold/average/warm winter min temps at a 
 # low/average/high elevation site)
 preds <- cbind(newdat, 
-               est = predict(m_3way2, newdata = newdat)) %>%
-  arrange(abund4, elev_z, tmin_wi_z, ppt_9_z) %>%
+               est = predict(m_full, newdata = newdat)) %>%
+  arrange(abund3, elev_z, tmin_wi_z, ppt_9_z) %>%
+  mutate(ppt_9_p = ppt_9_z * sd(flowers$ppt_9_p) + mean(flowers$ppt_9_p)) %>%
   mutate(loc = case_when(
-    elev_z == min(flowers$elev_z) ~ "low elev",
-    elev_z == 0 ~ "average elev",
-    elev_z == max(flowers$elev_z) ~ "high elev",
+    elev_z == min(flowers$elev_z) ~ "Low elevation",
+    elev_z == 0 ~ "Average elevation",
+    elev_z == max(flowers$elev_z) ~ "High elevation",
   )) %>%
   mutate(winter = case_when(
-    tmin_wi_z == min(flowers$tmin_wi_z) ~ "cold winter",
-    tmin_wi_z == 0 ~ "average winter",
-    tmin_wi_z == max(flowers$tmin_wi_z) ~ "warm winter"
+    tmin_wi_z == 0 ~ "Average winter",
+    tmin_wi_z == 2 ~ "Warm winter"
   )) %>%
   mutate(loc = factor(loc, 
-                      levels = c("high elev", "average elev", "low elev"))) %>%
+                      levels = c("High elevation", 
+                                 "Average elevation", 
+                                 "Low elevation"))) %>%
   mutate(winter = factor(winter, 
-                         levels = c("cold winter", "average winter", 
-                                    "warm winter")))
+                         levels = c("Average winter", "Warm winter"))) %>%
+  # filter(!(loc == "High elevation" & 
+  #            (ppt_9_z < highelev_ppt[1] | ppt_9_z > highelev_ppt[2]))) %>%
+  mutate(abund3 = case_when(
+    abund3 == "few or none" ~ "10 or less",
+    abund3 == "some" ~ "11 to 100",
+    abund3 == "many" ~ "More than 100"
+  )) %>%
+  mutate(abund3 = factor(abund3, levels = c("10 or less",
+                                            "11 to 100",
+                                            "More than 100")))
 
-ggplot(preds, aes(x = ppt_9_z, y = est)) +
-  geom_line(aes(color = abund4), linewidth = 1.3) +
-  scale_color_brewer(palette = "BrBG") +
+fig_6panel <- ggplot(preds, aes(x = ppt_9_p, y = est)) +
+  geom_line(aes(color = abund3), linewidth = 1.3) +
+  scale_color_manual(values = c("#d8b365", "#80cdc1", "#018571")) +
   facet_grid(loc ~ winter) +
-  labs(x = "Cumulative 9-monthprecipitation, anomaly (standardized)", 
+  labs(x = "Cumulative 9-month precipitation, % of normal", 
        y = "Probability", 
        color = "Flowers") +
   theme_bw() +
   theme(legend.position = "bottom")
 
+# ggsave("output/manuscript/saguaro-predictions-6panel.png",
+#        fig_6panel,
+#        height = 8, width = 6.5, units = "in", dpi = 600)
 
-m_noRE <- clm(abund4 ~ ppt_9_z * tmin_wi_z * elev_z, data = flowers)
+fig_4panel <- ggplot(filter(preds, loc != "Average elevation"),
+                     aes(x = ppt_9_p, y = est)) +
+  geom_line(aes(color = abund3), linewidth = 1.3) +
+  scale_color_manual(values = c("#d8b365", "#80cdc1", "#018571")) +
+  facet_grid(loc ~ winter) +
+  labs(x = "Cumulative 9-month precipitation, % of normal", 
+       y = "Probability", 
+       color = "Flowers") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+# ggsave("output/manuscript/saguaro-predictions-4panel.png",
+#        fig_4panel,
+#        height = 5.5, width = 6.5, units = "in", dpi = 600)
+
+# Other model/figure options --------------------------------------------------#
+
+# Could also remove non-signficant terms and make predictions from simpler model
+m_simple <- clmm2(abund3 ~ ppt_9_z * tmin_wi_z  + tmin_wi_z * elev_z, 
+                  random = factor(site), 
+                  Hess = TRUE, data = flowers)
+summary(m_simple)
+
+preds_simple <- cbind(newdat, 
+                      est = predict(m_simple, newdata = newdat)) %>%
+  arrange(abund3, elev_z, tmin_wi_z, ppt_9_z) %>%
+  mutate(ppt_9_p = ppt_9_z * sd(flowers$ppt_9_p) + mean(flowers$ppt_9_p)) %>%
+  mutate(loc = case_when(
+    elev_z == min(flowers$elev_z) ~ "Low elevation",
+    elev_z == 0 ~ "Average elevation",
+    elev_z == max(flowers$elev_z) ~ "High elevation",
+  )) %>%
+  mutate(winter = case_when(
+    tmin_wi_z == 0 ~ "Average winter",
+    tmin_wi_z == 2 ~ "Warm winter"
+  )) %>%
+  mutate(loc = factor(loc, 
+                      levels = c("High elevation", 
+                                 "Average elevation", 
+                                 "Low elevation"))) %>%
+  mutate(winter = factor(winter, 
+                         levels = c("Average winter", "Warm winter"))) %>%
+  # filter(!(loc == "High elevation" & 
+  #            (ppt_9_z < highelev_ppt[1] | ppt_9_z > highelev_ppt[2]))) %>%
+  mutate(abund3 = str_to_sentence(abund3)) %>%
+  mutate(abund3 = factor(abund3, levels = c("Few or none", "Some", "Many")))
+
+ggplot(preds_simple, aes(x = ppt_9_p, y = est)) +
+  geom_line(aes(color = abund3), linewidth = 1.3) +
+  scale_color_manual(values = c("#d8b365", "#80cdc1", "#018571")) +
+  facet_grid(loc ~ winter) +
+  labs(x = "Cumulative 9-month precipitation, % of normal", 
+       y = "Probability", 
+       color = "Flowers") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+
+# Use full model, but plot predictions for one set of conditions with CIs
+m_noRE <- clm(abund3 ~ ppt_9_z * tmin_wi_z * elev_z, data = flowers)
 preds_noRE <- predict(m_noRE, newdata = newdat, interval = TRUE) 
 preds_noRE <- cbind(newdat, fit = preds_noRE$fit, 
                     lwr = preds_noRE$lwr, upr = preds_noRE$upr)
@@ -484,105 +629,25 @@ preds_noRE %>%
     elev_z == max(flowers$elev_z) ~ "high elev",
   )) %>%
   mutate(winter = case_when(
-    tmin_wi_z == min(flowers$tmin_wi_z) ~ "cold winter",
     tmin_wi_z == 0 ~ "average winter",
-    tmin_wi_z == max(flowers$tmin_wi_z) ~ "warm winter"
+    tmin_wi_z == 2 ~ "warm winter"
   )) %>%
   mutate(loc = factor(loc, 
                       levels = c("high elev", "average elev", "low elev"))) %>%
   mutate(winter = factor(winter, 
-                         levels = c("cold winter", "average winter", 
+                         levels = c("average winter", 
                                     "warm winter"))) %>%
   filter(loc == "high elev" & winter == "warm winter") %>%
-  ggplot(aes(x = ppt_9_z, y = fit)) +
-  geom_ribbon(aes(ymin = lwr, ymax = upr, fill = abund4), alpha = 0.3) +
-  geom_line(aes(color = abund4), linewidth = 1.3) +
-  scale_color_brewer(palette = "BrBG") +
-  scale_fill_brewer(palette = "BrBG") +
-  facet_wrap(~abund4) +
-  labs(x = "Cumulative 9-monthprecipitation, anomaly (standardized)", 
-       y = "Probability", 
-       color = "Flowers") +
-  theme_bw() +
-  theme(legend.position = "bottom")
-
-
-# Better fit with just 3 abundance categories?
-m3_3way2 <- clmm2(abund3 ~ ppt_9_z * tmin_wi_z * elev_z, random = factor(site), 
-                  nAGQ = 10, Hess = TRUE, data = flowers)
-summary(m3_3way2)
-
-# Create dataframe for prediction
-newdat3 <- expand.grid(
-  abund3 = unique(flowers$abund3),
-  elev_z = c(min(flowers$elev_z), 0, max(flowers$elev_z)),
-  tmin_wi_z = c(min(flowers$tmin_wi_z), 0, max(flowers$tmin_wi_z)),
-  ppt_9_z = seq(min(flowers$ppt_9_z), max(flowers$ppt_9_z), length = 100),
-  KEEP.OUT.ATTRS = FALSE
-)
-# Plot predictions (= probability that saguaro will have X flowers
-# given 9-month precipitation for cold/average/warm winter min temps at a 
-# low/average/high elevation site)
-preds3 <- cbind(newdat3, 
-               est = predict(m3_3way2, newdata = newdat3)) %>%
-  arrange(abund3, elev_z, tmin_wi_z, ppt_9_z) %>%
-  mutate(loc = case_when(
-    elev_z == min(flowers$elev_z) ~ "low elev",
-    elev_z == 0 ~ "average elev",
-    elev_z == max(flowers$elev_z) ~ "high elev",
-  )) %>%
-  mutate(winter = case_when(
-    tmin_wi_z == min(flowers$tmin_wi_z) ~ "cold winter",
-    tmin_wi_z == 0 ~ "average winter",
-    tmin_wi_z == max(flowers$tmin_wi_z) ~ "warm winter"
-  )) %>%
-  mutate(loc = factor(loc, 
-                      levels = c("high elev", "average elev", "low elev"))) %>%
-  mutate(winter = factor(winter, 
-                         levels = c("cold winter", "average winter", 
-                                    "warm winter")))
-
-ggplot(preds3, aes(x = ppt_9_z, y = est)) +
-  geom_line(aes(color = abund3), linewidth = 1.3) +
-  scale_color_manual(values = c("#d8b365", "#80cdc1", "#018571")) +
-  facet_grid(loc ~ winter) +
-  labs(x = "Cumulative 9-month precipitation, anomaly (standardized)", 
-       y = "Probability", 
-       color = "Flowers") +
-  theme_bw() +
-  theme(legend.position = "bottom")
-
-m3_noRE <- clm(abund3 ~ ppt_9_z * tmin_wi_z * elev_z, data = flowers)
-preds3_noRE <- predict(m3_noRE, newdata = newdat3, interval = TRUE) 
-preds3_noRE <- cbind(newdat3, fit = preds3_noRE$fit, 
-                     lwr = preds3_noRE$lwr, upr = preds3_noRE$upr)
-
-preds3_noRE %>%
-  mutate(loc = case_when(
-    elev_z == min(flowers$elev_z) ~ "low elev",
-    elev_z == 0 ~ "average elev",
-    elev_z == max(flowers$elev_z) ~ "high elev",
-  )) %>%
-  mutate(winter = case_when(
-    tmin_wi_z == min(flowers$tmin_wi_z) ~ "cold winter",
-    tmin_wi_z == 0 ~ "average winter",
-    tmin_wi_z == max(flowers$tmin_wi_z) ~ "warm winter"
-  )) %>%
-  mutate(loc = factor(loc, 
-                      levels = c("high elev", "average elev", "low elev"))) %>%
-  mutate(winter = factor(winter, 
-                         levels = c("cold winter", "average winter", 
-                                    "warm winter"))) %>%
-  filter(loc == "high elev" & winter == "warm winter") %>%
+  mutate(abund3 = str_to_sentence(abund3)) %>%
+  mutate(abund3 = factor(abund3, levels = c("Few or none", "Some", "Many"))) %>%
   ggplot(aes(x = ppt_9_z, y = fit)) +
   geom_ribbon(aes(ymin = lwr, ymax = upr, fill = abund3), alpha = 0.3) +
   geom_line(aes(color = abund3), linewidth = 1.3) +
   scale_color_manual(values = c("#d8b365", "#80cdc1", "#018571")) +
   scale_fill_manual(values = c("#d8b365", "#80cdc1", "#018571")) +
-  facet_wrap(~abund3) +
-  labs(x = "Cumulative 9-monthprecipitation, anomaly (standardized)", 
+  facet_grid(abund3 ~ .) +
+  labs(x = "Cumulative 9-month precipitation, % 30-yr normals", 
        y = "Probability", 
-       color = "Flowers",
-       fill = "Flowers") +
+       color = "Flowers") +
   theme_bw() +
   theme(legend.position = "bottom")

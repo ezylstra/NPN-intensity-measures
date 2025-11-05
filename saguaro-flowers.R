@@ -448,12 +448,52 @@ ggplot(filter(states, STUSPS == "AZ")) +
 # Using 3 count categories because then sample sizes are a bit more equitable
 
 # Because we'll ultimately want to use clmm2 models to make predictions (if we 
-# don't go a Bayesian route), we're restricted to one random effect. We'll use
-# site.
+# don't go a Bayesian route), we're restricted to one random effect. 
 
-# Model with year (not trend) effects0
-m_yr <- clmm2(abund3 ~ fyr, random = factor(site), Hess = TRUE, data = flowers)
-summary(m_yr)
+# Model with year (not trend) effects and site-level random effects
+m_yr_site <- clmm2(abund3 ~ fyr, random = factor(site), 
+                   Hess = TRUE, data = flowers)
+summary(m_yr_site)
+# CIs from the profiled likelihood for the SD for the random effect
+confint(m_yr_site)
+
+# Model with year (not trend) effects and individual-level random effects
+m_yr_ind <- clmm2(abund3 ~ fyr, random = factor(id), 
+                   Hess = TRUE, data = flowers)
+summary(m_yr_ind)
+# CIs from the profiled likelihood for the SD for the random effect
+confint(m_yr_ind)
+
+################################################################################
+# Is it worth going Bayesian so we can evaluate different random effects?
+
+library(brms)
+m_test <- brm(abund3 ~ fyr + (1|site) + (1|id), data = flowers,
+              family = cumulative(link = "logit"))
+summary(m_test)
+m_test_s <- brm(abund3 ~ fyr + (1|site), data = flowers,
+              family = cumulative(link = "logit"))
+summary(m_test_s)
+m_test_i <- brm(abund3 ~ fyr + (1|id), data = flowers,
+                family = cumulative(link = "logit"))
+summary(m_test_i)
+
+loo_both <- loo(m_test, cores = 4)
+loo_both
+loo_site <- loo(m_test_s, cores = 4)
+loo_site
+loo_id <- loo(m_test_i, cores = 4)
+loo_id
+loo_compare(loo_both, loo_site, loo_id)
+# Model with elpd_diff = 0 and/or lowest looic is best
+# And this suggests that a model that includes both random effects is much
+# better than a model with just site or just individual. 
+
+m_test_full <- brm(abund3 ~ ppt_9_z * tmin_wi_z * elev_z + (1|site) + (1|id),
+                   data = flowers, family = cumulative(link = "logit"))
+summary(m_test_full)
+# Estimates are pretty similar to those from a clmm2 model with site random effects.
+################################################################################
 
 # Try different precip models
 m_ppt_fa <- clmm2(abund3 ~ ppt_fa_z, random = factor(site), Hess = TRUE,
@@ -488,6 +528,13 @@ summary(m_full)
 # highlight how weather effects vary regionally.
 anova(m_full, m_ppt9_tmin)
 # Chi-squared not signif (P = 0.19), but -logLik lower with full model
+
+# Precipitation and winter temperatures, allowing effects to vary with elevation
+# With individual, not site-level, random effects
+m_full_ind <- clmm2(abund3 ~ ppt_9_z * tmin_wi_z * elev_z, random = factor(id), 
+                    Hess = TRUE, data = flowers)
+summary(m_full_ind)
+AIC(m_full_ind, m_full)
 
 # Make predictions ------------------------------------------------------------#
 

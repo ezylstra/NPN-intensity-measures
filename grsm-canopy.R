@@ -1,6 +1,6 @@
 # Canopy fullness, deciduous trees in GRSM
 # ER Zylstra
-# 3 November 2025
+# 7 November 2025
 
 library(rnpn)
 library(dplyr)
@@ -369,18 +369,21 @@ save(m_no20_doy_REint, file = "output/grsm-models/no20-doy-REint.RData")
 # load("output/grsm-models/no20-doy-REint.RData")
 
 # Year as a random effect (including 2020 data)
-# Crossed random spp, year effects
-start_time3 <- Sys.time()
-m_allyr_doy <- ordbetareg(
-  prop ~ doy_z + (1 + doy_z|fyr) + (1 + doy_z|spp) + (1|id),
-  data = dff,
-  control = list(adapt_delta = 0.99),
-  iter = 4000, cores = 4, chains = 4,
-  backend = "cmdstanr")
-end_time3 <- Sys.time()
-end_time3 - start_time3
-save(m_allyr_doy, file = "output/grsm-models/allyr-doy.RData")
-# load("output/grsm-models/allyr-doy.RData")
+# Crossed random spp, year effects with an interaction
+# start_time3 <- Sys.time()
+# m_allyr_doy_REint <- ordbetareg(
+#   prop ~ doy_z + (1 + doy_z|fyr) + (1 + doy_z|spp) + (1 + doy_z|fyr:spp) + (1|id),
+#   data = dff,
+#   control = list(adapt_delta = 0.99),
+#   iter = 4000, cores = 4, chains = 4,
+#   backend = "cmdstanr")
+# end_time3 <- Sys.time()
+# end_time3 - start_time3
+# save(m_allyr_doy_REint, file = "output/grsm-models/allyr-doy-REint.RData")
+# load("output/grsm-models/allyr-doy-REint.RData")
+# This model had estimation issues: 25% of transition hit maximum treedepth
+# limit of 10. 
+# Took 15.3 hrs
 
 # Model canopy development as a function of AGDD ------------------------------#
 
@@ -398,47 +401,108 @@ save(m_no20_gdd, file = "output/grsm-models/no20-gdd.RData")
 # load("output/grsm-models/no20-gdd.RData")
 
 # Species as a random effect (including 2020 data)
-start_time5 <- Sys.time()
-m_allyr_gdd <- ordbetareg(
-  prop ~ agdd_z + (1 + agdd_z|spp) + (1|id),
-  data = dff, 
-  control = list(adapt_delta = 0.99),
-  iter = 4000, cores = 4, chains = 4,
-  backend = "cmdstanr")
-end_time5 <- Sys.time()
-end_time5 - start_time5
-save(m_allyr_gdd, file = "output/grsm-models/allyr-gdd.RData")
+# start_time5 <- Sys.time()
+# m_allyr_gdd <- ordbetareg(
+#   prop ~ agdd_z + (1 + agdd_z|spp) + (1|id),
+#   data = dff, 
+#   control = list(adapt_delta = 0.99),
+#   iter = 4000, cores = 4, chains = 4,
+#   backend = "cmdstanr")
+# end_time5 <- Sys.time()
+# end_time5 - start_time5
+# save(m_allyr_gdd, file = "output/grsm-models/allyr-gdd.RData")
 # load("output/grsm-models/allyr-gdd.RData")
+# Haven't run this one since DOY models that included 2020 had issues.
 
 # Compare models, results -----------------------------------------------------#
 
 load("output/grsm-models/no20-doy.RData")
 load("output/grsm-models/no20-doy-REint.RData")
-load("output/grsm-models/allyr-doy.RData")
 load("output/grsm-models/no20-gdd.RData")
-load("output/grsm-models/allyr-gdd.RData")
+
+# load("output/grsm-models/allyr-doy-REint.RData")
+# load("output/grsm-models/allyr-gdd.RData")
 
 # Compare models
 summary(m_no20_doy)
 summary(m_no20_doy_REint)
-summary(m_allyr_doy)
 summary(m_no20_gdd)
-summary(m_allyr_gdd)
 
-# Compare models that excluded 2020 data
+# Compare models that excluded 2020 data 
+# (lower looic is better; elpd_diff = 0 for best model)
 loo_doy <- loo(m_no20_doy, cores = 4)
-loo_doy
+loo_doy # looic = 12224.1
 loo_doy_int <- loo(m_no20_doy_REint, cores = 4)
-loo_doy_int
+loo_doy_int # looic = 11643.4
 loo_gdd <- loo(m_no20_gdd, cores = 4)
-loo_gdd
+loo_gdd # looic = 16051.7
 loo_compare(loo_doy, loo_doy_int, loo_gdd)
+# For DOY models, more complex RE structure is better (species effect varies by 
+# year; elpd_diff for non-interaction model = -290.3). Both DOY models much 
+# better than GDD model (though we'll want that model for prediction)
 
-# Compare models that included 2020 data
-loo_allyr_doy <- loo(m_allyr_doy, cores = 4)
-loo_allyr_doy
-loo_allyr_gdd <- loo(m_allyr_gdd, cores = 4)
-loo_allyr_gdd
-loo_allyr_compare(loo_allyr_doy, loo_allyr_gdd)
+# Visualize results for best DOY model ----------------------------------------#
 
-# Visualize results for best models -------------------------------------------#
+# Predictions for species across years (ignore year, year:spp, and ind REs)
+newdat <- expand_grid(doy_z = seq(min(dff_no20$doy_z), 
+                                  max(dff_no20$doy_z), 
+                                  length = 100),
+                      spp = levels(dff_no20$spp))
+
+doy_mn_spp <- m_no20_doy_REint %>%
+  epred_rvars(newdata = newdat, re_formula = ~ (1 + doy_z | spp)) %>%
+  mean_qi(.epred) %>%
+  mutate(doy = doy_z * sd(dff_no20$doy) + mean(dff_no20$doy))
+
+# Create figure
+plot_doy_mn_spp <- ggplot(filter(doy_mn_spp, doy > 80 & doy < 160), 
+                          aes(x = doy, y = .epred)) +
+  geom_ribbon(aes(ymin = .lower, ymax = .upper, fill = spp), alpha = 0.1) +
+  geom_line(aes(color = spp), linewidth = 0.8) +
+  # scale_color_manual(values = c('#7fc97f','#beaed4','#fdc086','#ffff99','#386cb0','#f0027f')) +
+  # scale_fill_manual(values = c('#7fc97f','#beaed4','#fdc086','#ffff99','#386cb0','#f0027f')) +
+  labs(x = "Day of year", 
+       y = "Predicted canopy fullness (%)", 
+       fill = "Species",
+       color = "Species") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_mn_spp
+# ggsave("output/manuscript/grsm-canopy-doy.png",
+#        plot_doy_mn_spp,
+#        width = 6.5, height = 4, units = "in", dpi = 600)
+
+# Predictions for species each year (ignore ind REs)
+newdat_yr <- expand_grid(doy_z = seq(min(dff_no20$doy_z), 
+                                  max(dff_no20$doy_z), 
+                                  length = 100),
+                         spp = levels(dff_no20$spp),
+                         fyr = levels(dff_no20$fyr))
+
+doy_yr_spp <- m_no20_doy_REint %>%
+  epred_rvars(newdata = newdat_yr, 
+              re_formula = ~ (1 + doy_z|fyr) + (1 + doy_z|spp) + (1 + doy_z|fyr:spp)) %>%
+  mean_qi(.epred) %>%
+  mutate(doy = doy_z * sd(dff_no20$doy) + mean(dff_no20$doy))
+
+# Create figure
+plot_doy_yr_spp <- ggplot(filter(doy_yr_spp, doy > 80 & doy < 160), 
+                          aes(x = doy, y = .epred)) +
+  geom_ribbon(aes(ymin = .lower, ymax = .upper, fill = spp), alpha = 0.1) +
+  geom_line(aes(color = spp), linewidth = 0.8) +
+  facet_wrap(~fyr) +
+  # scale_color_manual(values = c('#7fc97f','#beaed4','#fdc086','#ffff99','#386cb0','#f0027f')) +
+  # scale_fill_manual(values = c('#7fc97f','#beaed4','#fdc086','#ffff99','#386cb0','#f0027f')) +
+  labs(x = "Day of year", 
+       y = "Predicted canopy fullness (%)", 
+       fill = "Species",
+       color = "Species") +
+  theme_bw() +
+  theme(legend.position = "bottom")
+plot_doy_yr_spp
+# ggsave("output/manuscript/grsm-canopy-doy-yr.png",
+#        plot_doy_yr_spp,
+#        width = 6.5, height = 8, units = "in", dpi = 600)
+# Make height shorter OR do a 2 panel wide grid with legend in 
+# last slot #####
+

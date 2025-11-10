@@ -1,6 +1,6 @@
 # Canopy fullness, deciduous trees in GRSM
 # ER Zylstra
-# 7 November 2025
+# 10 November 2025
 
 library(rnpn)
 library(dplyr)
@@ -13,10 +13,6 @@ library(ordbetareg)
 library(tidybayes)
 library(terra)
 # library(tidyterra) # Need this if I create a map
-
-# Not sure I need these...
-# library(broom)        # Convert model objects to data frames
-# library(broom.mixed)  # Convert brms model objects to data frames
 
 # Load shapefile with US state boundaries -------------------------------------#
 
@@ -454,23 +450,33 @@ doy_mn_spp <- m_no20_doy_REint %>%
   mean_qi(.epred) %>%
   mutate(doy = doy_z * sd(dff_no20$doy) + mean(dff_no20$doy))
 
+# Colorblind palette from here: 
+# https://developer.r-project.org/Blog/public/2019/11/21/a-new-palette-for-r/
+color <- c("#DF536B", "#F5C710", "gray62","#61D04F", "#2297E6", "#28E2E5")
+
 # Create figure
 plot_doy_mn_spp <- ggplot(filter(doy_mn_spp, doy > 80 & doy < 160), 
                           aes(x = doy, y = .epred)) +
   geom_ribbon(aes(ymin = .lower, ymax = .upper, fill = spp), alpha = 0.1) +
   geom_line(aes(color = spp), linewidth = 0.8) +
-  # scale_color_manual(values = c('#7fc97f','#beaed4','#fdc086','#ffff99','#386cb0','#f0027f')) +
-  # scale_fill_manual(values = c('#7fc97f','#beaed4','#fdc086','#ffff99','#386cb0','#f0027f')) +
+  geom_hline(yintercept = 0.5, color = "gray30", linetype = "dotted") +
+  scale_color_manual(values = color) +
+  scale_fill_manual(values = color) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25), 
+                     labels = seq(0, 100, by = 25)) +
   labs(x = "Day of year", 
-       y = "Predicted canopy fullness (%)", 
-       fill = "Species",
-       color = "Species") +
+       y = "Predicted canopy fullness (%)") +
   theme_bw() +
-  theme(legend.position = "bottom")
+  theme(legend.position = "inside",
+        legend.position.inside = c(0.15, 0.75),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 8),
+        legend.key.height = unit(13, "pt"),
+        legend.margin = margin(c(0, 0, 0, 0)))
 plot_doy_mn_spp
 # ggsave("output/manuscript/grsm-canopy-doy.png",
 #        plot_doy_mn_spp,
-#        width = 6.5, height = 4, units = "in", dpi = 600)
+#        width = 6.5, height = 3, units = "in", dpi = 600)
 
 # Predictions for species each year (ignore ind REs)
 newdat_yr <- expand_grid(doy_z = seq(min(dff_no20$doy_z), 
@@ -485,24 +491,91 @@ doy_yr_spp <- m_no20_doy_REint %>%
   mean_qi(.epred) %>%
   mutate(doy = doy_z * sd(dff_no20$doy) + mean(dff_no20$doy))
 
-# Create figure
+# Create 3x3 panel figure
 plot_doy_yr_spp <- ggplot(filter(doy_yr_spp, doy > 80 & doy < 160), 
                           aes(x = doy, y = .epred)) +
   geom_ribbon(aes(ymin = .lower, ymax = .upper, fill = spp), alpha = 0.1) +
   geom_line(aes(color = spp), linewidth = 0.8) +
+  geom_hline(yintercept = 0.5, color = "gray30", linetype = "dotted") +
   facet_wrap(~fyr) +
-  # scale_color_manual(values = c('#7fc97f','#beaed4','#fdc086','#ffff99','#386cb0','#f0027f')) +
-  # scale_fill_manual(values = c('#7fc97f','#beaed4','#fdc086','#ffff99','#386cb0','#f0027f')) +
+  scale_color_manual(values = color) +
+  scale_fill_manual(values = color) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25), 
+                     labels = seq(0, 100, by = 25)) +
   labs(x = "Day of year", 
-       y = "Predicted canopy fullness (%)", 
-       fill = "Species",
-       color = "Species") +
+       y = "Predicted canopy fullness (%)") +
   theme_bw() +
-  theme(legend.position = "bottom")
+  theme(legend.position = "bottom",
+        legend.title = element_blank(),
+        legend.text = element_text(size = 9))
 plot_doy_yr_spp
-# ggsave("output/manuscript/grsm-canopy-doy-yr.png",
+# ggsave("output/manuscript/grsm-canopy-doy-yr-3x3.png",
 #        plot_doy_yr_spp,
-#        width = 6.5, height = 8, units = "in", dpi = 600)
-# Make height shorter OR do a 2 panel wide grid with legend in 
-# last slot #####
+#        width = 6.5, height = 6.5, units = "in", dpi = 600)
 
+# Create 5x2 panel figure
+plot_doy_yr_spp2 <- ggplot(filter(doy_yr_spp, doy > 80 & doy < 160), 
+                           aes(x = doy, y = .epred)) +
+  geom_ribbon(aes(ymin = .lower, ymax = .upper, fill = spp), alpha = 0.1) +
+  geom_line(aes(color = spp), linewidth = 0.8) +
+  geom_hline(yintercept = 0.5, color = "gray30", linetype = "dotted") +
+  facet_wrap(~fyr, ncol = 2) +
+  scale_color_manual(values = color) +
+  scale_fill_manual(values = color) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25), 
+                     labels = seq(0, 100, by = 25)) +
+  labs(x = "Day of year", 
+       y = "Predicted canopy fullness (%)") +
+  theme_bw() +
+  theme(legend.position = "inside",
+        legend.position.inside = c(0.78, 0.08),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 8),
+        legend.key.height = unit(13, "pt"))
+plot_doy_yr_spp2
+# ggsave("output/manuscript/grsm-canopy-doy-yr-5x2.png",
+#        plot_doy_yr_spp2,
+#        width = 3.5, height = 7.5, units = "in", dpi = 600)
+
+# Visualize results for GDD model ---------------------------------------------#
+
+# Predictions for species across years (ignore year, year:spp, and ind REs)
+newdat <- expand_grid(agdd_z = seq(min(dff_no20$agdd_z), 
+                                   max(dff_no20$agdd_z), 
+                                   length = 100),
+                      spp = levels(dff_no20$spp))
+
+gdd_spp <- m_no20_gdd %>%
+  epred_rvars(newdata = newdat, re_formula = ~ (1 + agdd_z | spp)) %>%
+  mean_qi(.epred) %>%
+  mutate(agdd = agdd_z * sd(dff_no20$agdd) + mean(dff_no20$agdd))
+
+
+# Colorblind palette from here: 
+# https://developer.r-project.org/Blog/public/2019/11/21/a-new-palette-for-r/
+color <- c("#DF536B", "#F5C710", "gray62","#61D04F", "#2297E6", "#28E2E5")
+
+xlab <- "Accumulated growing degree days (°C)"
+
+plot_gdd_spp <- ggplot(filter(gdd_spp, agdd > 400 & agdd < 1600), 
+                       aes(x = agdd, y = .epred)) +
+  geom_ribbon(aes(ymin = .lower, ymax = .upper, fill = spp), alpha = 0.1) +
+  geom_line(aes(color = spp), linewidth = 0.8) +
+  geom_hline(yintercept = 0.5, color = "gray30", linetype = "dotted") +
+  scale_color_manual(values = color) +
+  scale_fill_manual(values = color) +
+  scale_y_continuous(breaks = seq(0, 1, by = 0.25), 
+                     labels = seq(0, 100, by = 25)) +
+  labs(x = xlab, 
+       y = "Predicted canopy fullness (%)") +
+  theme_bw() +
+  theme(legend.position = "inside",
+        legend.position.inside = c(0.15, 0.75),
+        legend.title = element_blank(),
+        legend.text = element_text(size = 8),
+        legend.key.height = unit(13, "pt"),
+        legend.margin = margin(c(0, 0, 0, 0)))
+plot_gdd_spp
+# ggsave("output/manuscript/grsm-canopy-gdd.png",
+#        plot_gdd_spp,
+#        width = 6.5, height = 3, units = "in", dpi = 600)

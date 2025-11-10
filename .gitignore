@@ -19,6 +19,10 @@
 !/weather-data/grsm/**
 !/weather-data/grsm/.gitkeep
 
+/weather-data/redbuds/
+!/weather-data/redbuds/**
+!/weather-data/grsm/.gitkeep
+
 /npn-data/intensity-oaks/
 !/npn-data/intensity-oaks/**
 !/npn-data/intensity-oaks/.gitkeep

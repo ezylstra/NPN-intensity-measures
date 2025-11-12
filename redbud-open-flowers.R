@@ -1,6 +1,6 @@
 # Number of open flowers, eastern redbud
 # ER Zylstra
-# 10 November 2025
+# 12 November 2025
 
 library(rnpn)
 library(dplyr)
@@ -199,17 +199,20 @@ count(flowers, status_flowers, status_open, intensity_flowers, intensity_open)
 # Are there any observations of the same plant on the same day?
 flowers %>% distinct(id, obsdate) %>% nrow() == nrow(flowers)
 # Yes
-flowers %>%
-  group_by(id, obsdate) %>%
-  summarize(n_obs = n(), 
-            n_status_open = sum(!is.na(status_open)),
-            n_int_flowers = sum(!is.na(intensity_flowers)),
-            n_int_open = sum(!is.na(intensity_open)),
-            .groups = "keep") %>%
-  data.frame() %>%
-  filter(n_obs > 1) 
+
+# flowers %>%
+#   group_by(id, obsdate) %>%
+#   summarize(n_obs = n(), 
+#             n_status_open = sum(!is.na(status_open)),
+#             n_int_flowers = sum(!is.na(intensity_flowers)),
+#             n_int_open = sum(!is.na(intensity_open)),
+#             .groups = "keep") %>%
+#   data.frame() %>%
+#   filter(n_obs > 1) 
+
 # In almost every case, (n = 21) one observation provided an intensity values
 # for flowers and the other provided an intensity value for open flowers.
+
 # Will combine them.
 max_na <- function(x) {
   ifelse(sum(is.na(x)) == length(x), NA, max(x, na.rm = TRUE))
@@ -315,11 +318,11 @@ flowers <- flowers %>%
 # Remove observations past DOY 180
 flowers <- filter(flowers, doy <= 180)
 
-# Create rules for filtering plant-years
-  # Keep plant-year combinations with >=2 non-zero counts
-  # Keep plant-year combinations with at least one observation before DOY 100
-  # Keep plant-year combinations that start and end with 0 counts
-  # Remove all other plant-years
+# Create rules for filtering plant-years. 
+# Exclude plant-years that don't meet these criteria:
+  # >=2 non-zero counts
+  # At least one observation before DOY 100
+  # Start and end observations with 0 counts
 of_plantyrs <- flowers %>%
   arrange(id, obsdate) %>%
   group_by(id, yr) %>%
@@ -339,9 +342,10 @@ of_plantyrs <- flowers %>%
   # 944 plant-years had 0 or 1 non-zero count
   count(filter(of_plantyrs, min_counts == 1), remove, earliest_obs)
   # Of plant-years with >= 2 counts, 55 had earliest observation after DOY 100
-  count(filter(of_plantyrs, min_counts == 1 & earliest_obs == 1), remove, startend0)
-  # Of plant-years with >= 2 counts with obs before DOY 100, 190 did not start and
-  # end with 0 counts
+  count(filter(of_plantyrs, min_counts == 1 & earliest_obs == 1), 
+        remove, startend0)
+  # Of plant-years with >= 2 counts with obs before DOY 100, 190 did not start
+  # and end with 0 counts
   
   count(of_plantyrs, remove)
   sum(of_plantyrs$remove == 0) / nrow(of_plantyrs) * 100
@@ -373,7 +377,7 @@ ofsites <- of %>%
 # write.table(select(ofsites, lat, lon, site), "weather-data/redbud-sites.csv",
 #             sep = ",", row.names = FALSE, col.names = FALSE)
 
-# Process and attach weather data ---------------------------------------------#
+# Process weather data --------------------------------------------------------#
 
 # Load daily data
 prism_files <- list.files("weather-data/redbuds",
@@ -393,8 +397,7 @@ for (i in 1:length(prism_files)) {
 }
 rm(prism1)
 
-months.match <- data.frame(month.name = month.name,
-                           month = 1:12)
+months.match <- data.frame(month.name = month.name, month = 1:12)
 
 # Load 30-year (1991-2020) daily normals:
 normsfile <- list.files("weather-data/redbuds/", 
@@ -526,3 +529,225 @@ ofmax <- ofmax %>%
          winter_tmin_z = (winter_tmin_anom - mean(winter_tmin_anom))/sd(winter_tmin_anom),
          agdd_z = (agdd_anom - mean(agdd_anom))/sd(agdd_anom))
 
+# Correlations among potential covariates?
+ofmax %>%
+  select(winter_ppt_perc, winter_tmin_anom, agdd_anom, lat, lon, elev) %>%
+  cor() %>%
+  round(2)
+# Nothing worrying here. Highest correlation is 0.55 between winter minimum
+# temperatures and AGDD (which isn't too surprising since they both include
+# temperature based metrics in Jan-Feb)
+
+# Model annual/spatial variation in max counts --------------------------------# 
+
+# Will want to log maximum counts since they vary over orders of magnitude
+ofmax <- ofmax %>%
+  mutate(maxcount_log = log(maxcount))
+
+# Will use ML to compare models with different fixed effects, then run model
+# using REML for inferences.
+
+# Model that only includes topographic/geographic variables and random effects:
+m_noweather <- lmer(maxcount_log ~ lat_z + lon_z + elev_z + (1|fyr) + (1|site),
+                    data = ofmax, REML = FALSE)
+summary(m_noweather)
+# Max counts higher at higher latitudes. 
+# No effect of elevation, and not strong evidence for longitude either
+# Residual variance (individual) greater than site variance
+# Random year effect tiny (which is interesting since there's no annual
+# covariates in the model)
+
+# Throw everything into a model:
+m_full <- lmer(maxcount_log ~ lat_z + lon_z + elev_z + 
+                 winter_ppt_z + winter_tmin_z + agdd_z + (1|fyr) + (1|site),
+               data = ofmax, REML = FALSE)
+summary(m_full)
+
+# Remove variables that have no explanatory power (|t| < 1; AGDD and elev):
+m_winter <- lmer(maxcount_log ~ lat_z + lon_z +
+                   winter_ppt_z + winter_tmin_z + (1|fyr) + (1|site),
+                 data = ofmax, REML = FALSE)
+summary(m_winter)
+anova(m_full, m_winter) # Reduced model is good (and has lower AIC)
+
+# Keeping everything else in, even if not signficant at a 0.05 level. Refit with
+# REML = TRUE
+m_winter <- lmer(maxcount_log ~ lat_z + lon_z +
+                   winter_ppt_z + winter_tmin_z + (1|fyr) + (1|site),
+                 data = ofmax, REML = TRUE)
+summary(m_winter)
+confint(m_winter)
+
+# More blooms on trees at higher latitudes, slighter more on trees further west
+# More blooms following wetter winters (Dec-Feb) and slightly more after colder
+# winters.
+
+# Save table with model estimates to file:
+max_fixed <- as.data.frame(summary(m_winter)$coefficients) %>%
+  tibble::rownames_to_column("parameter") %>%
+  select(-c("t value", "Std. Error")) %>%
+  mutate(parameter_type = "fixed", .before = parameter)
+max_random <- as.data.frame(VarCorr(m_winter)) %>%
+  select(grp, sdcor) %>%
+  rename(parameter = grp,
+         Estimate = sdcor) %>%
+  mutate(parameter_type = "random-SDs", .before = parameter)
+max_ci <- as.data.frame(confint(m_winter)) %>%
+  rename(lower = "2.5 %",
+         upper = "97.5 %")
+max_model_ests <- rbind(max_random, max_fixed) %>% cbind(max_ci)
+write.csv(max_model_ests,
+          file = "output/manuscript/max-model-estimates.csv",
+          row.names = FALSE)
+
+# Create dataset to evaluate variation in peak flower timing ------------------# 
+
+# It doesn't make much sense to fit smooths/GAMs to the number of open flowers 
+# for each plant-year, and there aren't any natural ways to group plants like 
+# there were with gardens/accessions in the Rauschkolb preprint. Probably best
+# to use date(s) of highest flower count. Given then, we'll want to filter out 
+# plant-years where there were long gaps either before or after the date when
+# the highest number of flowers were reported (to limit bias)
+
+# Within each plant-year, calculate number of days since previous observation 
+# (interval_before) and number of days until next observation (interval_after)
+of <- of %>%
+  arrange(id, obsdate) %>%
+  mutate(obsdate = ymd(obsdate)) %>%
+  mutate(interval_before = NA)
+for (i in 2:nrow(of)) {
+  of$interval_before[i] <- ifelse(
+    of$id[i] == of$id[i - 1] & of$yr[i] == of$yr[i - 1],
+    as.numeric(of$obsdate[i] - of$obsdate[i - 1]),
+    NA
+  )
+}
+nrows <- nrow(of)
+of$interval_after <- c(of$interval_before[2:nrows], NA)
+
+# For each plant-year, identify max flower count and date(s) when they occurred
+of_intermediate <- of %>%
+  group_by(yr, id) %>%
+  mutate(maxvalue = max(nopen)) %>%
+  ungroup() %>%
+  filter(nopen == maxvalue) %>%
+  group_by(yr, id, maxvalue) %>%
+  summarize(first_max = min(doy),
+            last_max = max(doy),
+            .groups = "keep") %>%
+  data.frame()
+
+# Summarize information for each plant-year AND identify plant-years when there
+# there were more than 21 or 30 days before or after dates when max flower
+# counts were observed
+of_plantyr <- of %>%
+  left_join(of_intermediate, by = c("yr", "id")) %>%
+  group_by(yr, id, site, lat, lon, elev, maxvalue, first_max, last_max) %>%
+  summarize(nobs = n(),
+            firstobs = min(doy),
+            lastobs = max(doy), 
+            nflower = sum(status_flowers),
+            nopen = sum(status_open),
+            interval_beforemax = interval_before[doy == first_max],
+            interval_aftermax = interval_after[doy == last_max],
+            .groups = "keep") %>%
+  data.frame() %>%
+  mutate(filter30 = ifelse(interval_beforemax > 30 | interval_aftermax > 30, 1, 0),
+         filter21 = ifelse(interval_beforemax > 21 | interval_aftermax > 21, 1, 0))
+
+# Look at filtering results by year
+of_plantyr %>%
+  group_by(yr) %>%
+  summarize(nplants = n(),
+            filter30 = n() - sum(filter30),
+            filter21 = n() - sum(filter21))
+# For now, will use 30-day interval filter
+
+# Calculate peak date as mean date between first and last dates with max count
+ofpeak <- of_plantyr %>%
+  filter(filter30 == 0) %>%
+  select(-c(filter30, filter21)) %>%
+  mutate(max_span = last_max - first_max,
+         peak = floor((first_max + last_max)/2),
+         fyr = factor(yr),
+         yr0 = yr - min(yr))
+# There are a total of 509 plant-year combinations in the filtered dataset
+
+# Attach weather variables
+ofpeak <- ofpeak %>%
+  left_join(weather_vars, by = c("site" = "site", "yr" = "season"))
+
+# Standardize variables
+ofpeak <- ofpeak %>%
+  mutate(lat_z = (lat - mean(lat))/sd(lat),
+         lon_z = (lon - mean(lon))/sd(lon),
+         elev_z = (elev - mean(elev))/sd(elev),
+         winter_ppt_z = (winter_ppt_perc - mean(winter_ppt_perc))/sd(winter_ppt_perc),
+         winter_tmin_z = (winter_tmin_anom - mean(winter_tmin_anom))/sd(winter_tmin_anom),
+         agdd_z = (agdd_anom - mean(agdd_anom))/sd(agdd_anom))
+
+# Correlations among potential covariates?
+ofpeak %>%
+  select(winter_ppt_perc, winter_tmin_anom, agdd_anom, lat, lon, elev) %>%
+  cor() %>%
+  round(2)
+# Again, nothing worrying here. Highest correlation of 0.55 between AGDD and 
+# winter minimum temperatures
+
+# Model variation in peak flower timing ---------------------------------------# 
+
+# Model that only includes topographic/geographic variables and random effects:
+mpeak_noweather <- lmer(peak ~ lat_z + lon_z + elev_z + (1|fyr) + (1|site),
+                        data = ofpeak, REML = FALSE)
+summary(mpeak_noweather)
+confint(mpeak_noweather)
+# Flowering peak later at higher latitudes, and to a much smaller degree,
+# higher elevations. No effect of longitude.
+# All random effects (year, site, individual [residual]) seem important
+
+# Evidence of a trend over time?
+mpeak_trend <- lmer(peak ~ lat_z + lon_z + elev_z + yr0 + (1|fyr) + (1|site),
+                    data = ofpeak, REML = FALSE)
+summary(mpeak_trend)
+anova(mpeak_trend, mpeak_noweather)
+# No strong evidence of a trend (though peak maybe slightly earlier over time?)
+
+# Throw everything (but trend) into a model:
+mpeak_full <- lmer(peak ~ lat_z + lon_z + elev_z +
+                     winter_ppt_z + winter_tmin_z + agdd_z + (1|fyr) + (1|site),
+                   data = ofpeak, REML = FALSE)
+summary(mpeak_full)
+
+# Remove variables that have no explanatory power (|t| < 1; lon, winter vars):
+mpeak_agdd <- lmer(peak ~ lat_z + elev_z + agdd_z + (1|fyr) + (1|site),
+                   data = ofpeak, REML = FALSE)
+summary(mpeak_agdd)
+anova(mpeak_full, mpeak_agdd) # Reduced model is good (and has lower AIC)
+
+# Keeping everything else in, even if not signficant at a 0.05 level. Refit with
+# REML = TRUE
+mpeak_agdd <- lmer(peak ~ lat_z + elev_z + agdd_z + (1|fyr) + (1|site),
+                   data = ofpeak, REML = TRUE)
+summary(mpeak_agdd)
+confint(mpeak_agdd)
+
+# Later peak at higher latitudes and elevations. Earlier peak if Jan-Mar is 
+# warmer than normal (2.6 days earlier for each 1-SD increase [80 degC] in AGDD)
+
+# Save table with model estimates to file:
+peak_fixed <- as.data.frame(summary(mpeak_agdd)$coefficients) %>%
+  tibble::rownames_to_column("parameter") %>%
+  select(-c("t value", "Std. Error")) %>%
+  mutate(parameter_type = "fixed", .before = parameter)
+peak_random <- as.data.frame(VarCorr(mpeak_agdd)) %>%
+  select(grp, sdcor) %>%
+  rename(parameter = grp,
+         Estimate = sdcor) %>%
+  mutate(parameter_type = "random-SDs", .before = parameter)
+peak_ci <- as.data.frame(confint(mpeak_agdd)) %>%
+  rename(lower = "2.5 %",
+         upper = "97.5 %")
+peak_model_ests <- rbind(peak_random, peak_fixed) %>% cbind(peak_ci)
+write.csv(peak_model_ests,
+          file = "output/manuscript/peak-model-estimates.csv",
+          row.names = FALSE)

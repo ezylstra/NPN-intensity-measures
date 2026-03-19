@@ -124,6 +124,9 @@ df <- df %>%
 # Now the only NAs left in the intensity_midpoint column occur when the status 
 # is yes but no intensity value was provided 
 
+# Number of saguaros observed at least once between 2016 and 2025
+(n_total <- length(unique(df$id))) # 291
+
 # Filter data -----------------------------------------------------------------#
 
 # Want to exclude any saguaros that weren't observed multiple times during the 
@@ -210,6 +213,9 @@ df_filter <- df %>%
   filter(remove == 0) %>%
   select(-remove)
 
+# Number of saguaros that had a sufficient number of observations
+(n_filtered <- length(unique(df_filter$id))) # 119
+
 # Aggregate data for each plant-year ------------------------------------------#
 
 flowers <- df_filter %>%
@@ -222,7 +228,7 @@ flowers <- df_filter %>%
 head(flowers)
 
 count(flowers, yr) # 11-53 saguaros/yr
-count(flowers, max_count)
+count(flowers, max_count) 
 
 # Create four count categories
   # midpoint = 0 (none)
@@ -396,6 +402,9 @@ sites <- sites %>%
 flowers <- flowers %>%
   filter(elev < 1100)
 
+# New number of saguaros in dataset
+(n_saguaros <- length(unique(flowers$id)))
+
 # Add weather data to flowering dataset (and standardize weather, elev data)
 flowers <- flowers %>%
   left_join(weathervars, by = c("site" = "site", "yr" = "seasonyr")) %>%
@@ -429,6 +438,11 @@ ggplot(filter(states, STUSPS == "AZ")) +
   theme_bw()
 # Would be better to have this overlaid on an elevation gradient...
 
+# Geographic coordinates and plant-years, colored by elevation
+# Just southern AZ
+sitesv <- vect(sites, geom = c("lon", "lat"), crs = "epsg:4326")
+sitesv <- terra::project(sitesv, crs(states))
+
 # Run ordinal models ----------------------------------------------------------#
 
 # First, look how max counts are distributed among categories 
@@ -436,7 +450,7 @@ count(flowers, max_count, abund3, abund4)
 # Will use 3 categories because then sample sizes are a bit more equitable
 
 # Think it will likely be important to have individual-level random effects
-# to account for the fact that some saguars were observed in multiple years and
+# to account for the fact that some saguaros were observed in multiple years and
 # because flower production is known to increase with number of arms (and 
 # maybe age) and we don't have that information for each saguaro in the dataset.
 # It may also be important to have site-level random effects since there are 
@@ -612,41 +626,93 @@ count(flowers, max_count, abund3, abund4)
                                               "More than 100")))
   
   # 6-panel figure
+  text_size <- 8
   plot6_flowers <- ggplot(pred_flowers, aes(x = ppt_9_p, y = .epred)) +
     # geom_ribbon(aes(ymin = .lower, ymax = .upper, fill = abund3), alpha = 0.2) +
-    geom_line(aes(color = abund3), linewidth = 1.3) +
+    geom_line(aes(color = abund3), linewidth = 1) +
     scale_color_manual(values = c("#d8b365", "#80cdc1", "#018571")) +
     # scale_fill_manual(values = c("#d8b365", "#80cdc1", "#018571")) +
     facet_grid(loc ~ winter) +
     labs(x = "Cumulative 9-month precipitation, % of normal", 
          y = "Probability", 
-         color = "Flowers",
-         fill = "Flowers") +
+         color = "Flowers") +
     theme_bw() +
-    theme(legend.position = "bottom")
+    theme(legend.position = "bottom",
+          legend.margin   = margin(t = -8),
+          panel.grid = element_blank(),
+          axis.title = element_text(size = text_size),
+          axis.text = element_text(size = text_size),
+          legend.text = element_text(size = text_size),
+          legend.title = element_text(size = text_size), 
+          strip.text = element_text(size = text_size))
   plot6_flowers
   # ggsave("output/manuscript/saguaro-predictions-6panel.png",
   #        plot6_flowers,
-  #        height = 8, width = 6.5, units = "in", dpi = 600)
+  #        height = 4.5, width = 4, units = "in", dpi = 600)
+  
+  library(cowplot)
+  text_size <- 8
+  map <- ggplot(filter(states, STUSPS == "AZ")) +
+    # geom_spatvector(fill = "transparent") +
+    geom_spatvector(fill = "gray95") +
+    geom_spatvector(data = sitesv,
+                    aes(size = n_plantyrs, color = elev), 
+                    alpha = 0.8) +
+    scale_color_viridis_c(option = "mako") +
+    scale_size_continuous(range = c(0.5, 4)) +
+    scale_x_continuous(breaks = c(-114, -112, -110),
+                       limits = c(-114.8, -109.2),
+                       labels = c("-110°", "-112°", "-114°")) +
+    scale_y_continuous(breaks = c(32, 34, 36),
+                       limits = c(31.4, 36.8),
+                       labels = c("32°", "34°", "36°")) +
+    labs(size = "No. plant-years", 
+         color = "Elev (m)") +
+    theme_bw() +
+    theme(legend.position = "bottom",
+          legend.box = "horizontal",
+          legend.text = element_text(size = text_size),
+          legend.title = element_text(size = text_size),
+          legend.margin = margin(),
+          legend.direction = "vertical",
+          axis.text = element_text(size = text_size))
+  map
+  # Want to add saguaro range map...
+  
+  combined <- plot_grid(map, plot6_flowers, 
+                        nrow = 1, 
+                        scale = 0.98,
+                        rel_widths = c(4, 5))
+  ggsave("output/manuscript/map-saguaro-predictions-6panel.png",
+         combined,
+         width = 6.5, height = 4.5, units = "in", dpi = 600)
   
   # 4-panel figure
+  text_size <- 9
   plot4_flowers <- ggplot(filter(pred_flowers, loc != "Mean elevation"),
                           aes(x = ppt_9_p, y = .epred)) +
     # geom_ribbon(aes(ymin = .lower, ymax = .upper, fill = abund3), alpha = 0.2) +
-    geom_line(aes(color = abund3), linewidth = 1.3) +
+    geom_line(aes(color = abund3), linewidth = 1) +
     scale_color_manual(values = c("#d8b365", "#80cdc1", "#018571")) +
     # scale_fill_manual(values = c("#d8b365", "#80cdc1", "#018571")) +
     facet_grid(loc ~ winter) +
     labs(x = "Cumulative 9-month precipitation, % of normal", 
          y = "Probability", 
-         color = "Flowers",
-         fill = "Flowers") +
+         color = "Flowers") +
     theme_bw() +
-    theme(legend.position = "bottom")
+    theme(legend.position = "bottom",
+          legend.margin   = margin(t = -8),
+          panel.grid = element_blank(),
+          axis.title = element_text(size = text_size),
+          axis.text = element_text(size = text_size),
+          legend.text = element_text(size = text_size),
+          legend.title = element_text(size = text_size))
   plot4_flowers
   # ggsave("output/manuscript/saguaro-predictions-4panel.png",
   #        plot4_flowers,
-  #        height = 5.5, width = 6.5, units = "in", dpi = 600)
+  #        height = 3.5, width = 4, units = "in", dpi = 600)
+
+  
   
 # ML models (construction and prediction) -------------------------------------#
 

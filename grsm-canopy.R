@@ -319,6 +319,37 @@ dff_no20 <- dff_no20 %>%
          doy_z = (doy - mean(doy)) / sd(doy),
          elev_z = (elev - mean(elev)) / sd(elev))
 
+# Look at yearly averages (for summaries in paper)
+weather %>%
+  group_by(yr) %>%
+  filter(!yr %in% c(2015, 2020)) %>%
+  summarize(gdd80 = mean(agdd[doy == 80]),
+            gdd100 = mean(agdd[doy == 100]),
+            gdd120 = mean(agdd[doy == 120]),
+            gdd140 = mean(agdd[doy == 140]),
+            gdd160 = mean(agdd[doy == 160])) %>%
+  data.frame() %>%
+  pivot_longer(gdd80:gdd160,
+               names_to = "day",
+               values_to = "gdd") %>%
+  mutate(doy = as.numeric(str_remove(day, "gdd"))) %>%
+  ggplot() +
+  geom_line(aes(x = doy, y = gdd, group = factor(yr), 
+                color = factor(yr),
+                linetype = factor(yr)))
+  
+weather %>%
+  group_by(yr) %>%
+  filter(!yr %in% c(2015, 2020)) %>%
+  summarize(gdd80 = mean(agdd[doy == 80]),
+            gdd100 = mean(agdd[doy == 100]),
+            gdd120 = mean(agdd[doy == 120]),
+            gdd140 = mean(agdd[doy == 140]),
+            gdd160 = mean(agdd[doy == 160])) %>%
+  data.frame() %>%
+  mutate(across(gdd80:gdd160, round))
+
+
 # Prepare data for models -----------------------------------------------------#
 
 # Calculate canopy proportion (considering 95% as full), and

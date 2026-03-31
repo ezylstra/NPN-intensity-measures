@@ -1,6 +1,6 @@
 # Number of open flowers, eastern redbud
 # ER Zylstra
-# 30 March 2026
+# 31 March 2026
 
 library(rnpn)
 library(dplyr)
@@ -132,16 +132,6 @@ df <- df %>%
 df <- df %>%
   mutate(status = ifelse(status == 0 & !is.na(intensity_midpoint), 1, status))
 
-# # Extract information about sites ---------------------------------------------#
-# 
-# sites <- df %>%
-#   group_by(site, lat, lon, elev, state) %>%
-#   summarize(n_plants = n_distinct(id),
-#             n_yrs = n_distinct(yr),
-#             n_plantyrs = n_distinct(paste0(id, "_", yr)),
-#             .groups = "keep") %>%
-#   data.frame()
-
 # Combine observations from both flower phenophases ---------------------------#
 
 # Simplify data
@@ -209,7 +199,7 @@ flowers %>% distinct(id, obsdate) %>% nrow() == nrow(flowers)
 #             n_status_open = sum(!is.na(status_open)),
 #             n_int_flowers = sum(!is.na(intensity_flowers)),
 #             n_int_open = sum(!is.na(intensity_open)),
-#             .groups = "keep") %>%
+#             .groups = "drop") %>%
 #   data.frame() %>%
 #   filter(n_obs > 1)
 
@@ -226,7 +216,7 @@ flowers <- flowers %>%
             status_open = max_na(status_open),
             intensity_flowers = max_na(intensity_flowers),
             intensity_open = max_na(intensity_open),
-            .groups = "keep") %>%
+            .groups = "drop") %>%
   data.frame()
 
 # Calculate estimated number of open flowers (by individual and day) ----------#
@@ -252,10 +242,15 @@ flowers %>%
 # Restricting by latitude to minimize geographic variation
 # Restricting to recent years when there was a lot more data
 
-wkcounts <- flowers %>%
+flowerssub <- flowers %>%
   filter(lat >= 37 & lat <= 42) %>%
   filter(yr %in% 2022:2025) %>%
   mutate(wk = as.numeric(week(obsdate))) %>%
+  filter(wk %in% 9:25)
+# Number of trees
+length(unique(flowerssub$id))
+
+wkcounts <- flowerssub %>%
   group_by(yr, wk) %>%
   summarize(flowers = mean(intensity_flowers),
             flowers_md = median(intensity_flowers),
@@ -267,8 +262,7 @@ wkcounts <- flowers %>%
                values_to = "intensity") %>%
   mutate(type = ifelse(type4 %in% c("open", "open_md"), 
                        "Open flowers", "Flowers")) %>%
-  mutate(stat = ifelse(grepl("_md", type4), "median", "mean")) %>%
-  filter(wk %in% 9:25)
+  mutate(stat = ifelse(grepl("_md", type4), "median", "mean"))
 
 wkcount_summary <- wkcounts %>%
   filter(stat == "mean") %>%
@@ -317,7 +311,7 @@ of_plantyrs <- flowers %>%
             min_doy = min(doy),
             start0 = ifelse(nopen[1] == 0, 1, 0),
             end0 = ifelse(last(nopen) == 0, 1, 0),
-            .groups = "keep") %>%
+            .groups = "drop") %>%
   data.frame() %>%
   mutate(min_counts = ifelse(nonzero_counts > 1, 1, 0),
          earliest_obs = ifelse(min_doy <= 100, 1, 0),
@@ -350,7 +344,7 @@ ofsites <- of %>%
   summarize(n_plants = n_distinct(id),
             n_yrs = n_distinct(yr),
             n_plantyrs = n_distinct(paste0(id, "_", yr)),
-            .groups = "keep") %>%
+            .groups = "drop") %>%
   data.frame()
 
 # Write sites information to file to get PRISM weather data
@@ -406,12 +400,12 @@ ppt_month <- weather %>%
          month = month(date)) %>%
   group_by(site, yr, month) %>%
   summarize(ppt = sum(ppt),
-            .groups = "keep") %>%
+            .groups = "drop") %>%
   data.frame()
 # Add monthly normals
 pptnorms_month <- norms %>%
   group_by(site, month) %>%
-  summarize(ppt30 = sum(ppt30), .groups = "keep")
+  summarize(ppt30 = sum(ppt30), .groups = "drop")
 ppt_month <- ppt_month %>%
   left_join(pptnorms_month, by = c("site", "month"))
 
@@ -423,7 +417,7 @@ winter_ppt <- ppt_month %>%
   group_by(site, season) %>%
   summarize(winter_ppt = sum(ppt),
             winter_ppt30 = sum(ppt30),
-            .groups = "keep") %>%
+            .groups = "drop") %>%
   mutate(winter_ppt_perc = (winter_ppt/winter_ppt30) * 100) %>%
   data.frame()
   
@@ -437,7 +431,7 @@ winter_tmin <- weather %>%
   mutate(season = ifelse(month == 12, yr + 1, yr)) %>%
   filter(season %in% 2016:2025) %>%
   group_by(site, season) %>%
-  summarize(winter_tmin = mean(tmin), .groups = "keep") %>%
+  summarize(winter_tmin = mean(tmin), .groups = "drop") %>%
   data.frame()
 # Add normals
 winter_tmin_norms <- norms %>%
@@ -459,7 +453,7 @@ agdd <- weather %>%
   filter(doy <= 90) %>%
   mutate(gdd = ifelse(tmean < 0, 0, tmean)) %>%
   group_by(site, season) %>%
-  summarize(agdd = sum(gdd), .groups = "keep") %>%
+  summarize(agdd = sum(gdd), .groups = "drop") %>%
   data.frame()
 # Add normals
 agdd_norms <- norms %>%
@@ -486,7 +480,7 @@ ofmax <- of %>%
   group_by(site, id, state, lat, lon, elev, yr) %>%
   summarize(nobs = n(),
             maxcount = max(nopen),
-            .groups = "keep") %>%
+            .groups = "drop") %>%
   data.frame() %>%
   mutate(fyr = factor(yr)) %>%
   left_join(weather_vars, by = c("site" = "site", "yr" = "season"))
@@ -520,6 +514,10 @@ ofmax %>%
 # Nothing worrying here. Highest correlation is 0.55 between winter minimum
 # temperatures and AGDD (which isn't too surprising since they both include
 # temperature-based metrics in Jan-Feb)
+
+# Number of sites, trees
+length(unique(ofmax$site))
+length(unique(ofmax$id))
 
 # Model annual/spatial variation in max counts --------------------------------# 
 
@@ -578,12 +576,8 @@ max_random <- as.data.frame(VarCorr(m_winter)) %>%
   rename(parameter = grp,
          Estimate = sdcor) %>%
   mutate(parameter_type = "random-SDs", .before = parameter)
-max_ci95 <- as.data.frame(confint(m_winter)) %>%
-  rename(lower = "2.5 %",
-         upper = "97.5 %")
-max_ci80 <- as.data.frame(confint(m_winter, level = 0.80)) %>%
-  rename(lower = "10 %",
-         upper = "90 %")
+max_ci95 <- as.data.frame(confint(m_winter))
+max_ci80 <- as.data.frame(confint(m_winter, level = 0.80))
 max_model_ests <- rbind(max_random, max_fixed) %>% 
   cbind(max_ci95) %>%
   cbind(max_ci80)
@@ -625,7 +619,7 @@ of_intermediate <- of %>%
   group_by(yr, id, maxvalue) %>%
   summarize(first_max = min(doy),
             last_max = max(doy),
-            .groups = "keep") %>%
+            .groups = "drop") %>%
   data.frame()
 
 # Summarize information for each plant-year AND identify plant-years when there
@@ -633,7 +627,8 @@ of_intermediate <- of %>%
 # counts were observed
 of_plantyr <- of %>%
   left_join(of_intermediate, by = c("yr", "id")) %>%
-  group_by(yr, id, site, lat, lon, elev, maxvalue, first_max, last_max) %>%
+  group_by(yr, id, site, state, lat, lon, elev, 
+           maxvalue, first_max, last_max) %>%
   summarize(nobs = n(),
             firstobs = min(doy),
             lastobs = max(doy), 
@@ -641,7 +636,7 @@ of_plantyr <- of %>%
             nopen = sum(status_open),
             interval_beforemax = interval_before[doy == first_max],
             interval_aftermax = interval_after[doy == last_max],
-            .groups = "keep") %>%
+            .groups = "drop") %>%
   data.frame() %>%
   mutate(filter30 = ifelse(interval_beforemax > 30 | interval_aftermax > 30, 1, 0),
          filter21 = ifelse(interval_beforemax > 21 | interval_aftermax > 21, 1, 0))
@@ -684,6 +679,10 @@ ofpeak %>%
   round(2)
 # Again, nothing worrying here. Highest correlation of 0.55 between AGDD and 
 # winter minimum temperatures
+
+# Number of sites, trees
+length(unique(ofpeak$site))
+length(unique(ofpeak$id))
 
 # Model variation in peak flower timing ---------------------------------------# 
 
@@ -737,15 +736,64 @@ peak_random <- as.data.frame(VarCorr(mpeak_agdd)) %>%
   rename(parameter = grp,
          Estimate = sdcor) %>%
   mutate(parameter_type = "random-SDs", .before = parameter)
-peak_ci95 <- as.data.frame(confint(mpeak_agdd)) %>%
-  rename(lower = "2.5 %",
-         upper = "97.5 %")
-peak_ci80 <- as.data.frame(confint(mpeak_agdd, level = 0.80)) %>%
-  rename(lower = "10 %",
-         upper = "90 %")
+peak_ci95 <- as.data.frame(confint(mpeak_agdd))
+peak_ci80 <- as.data.frame(confint(mpeak_agdd, level = 0.80))
 peak_model_ests <- rbind(peak_random, peak_fixed) %>% 
   cbind(peak_ci95) %>%
   cbind(peak_ci80)
 write.csv(peak_model_ests,
           file = "output/manuscript/peak-model-estimates.csv",
           row.names = FALSE)
+
+# Create a map ----------------------------------------------------------------#
+
+ofmax_sites <- ofmax %>%
+  group_by(site, state, lat, lon, elev) %>%
+  summarize(n_trees = n_distinct(id),
+            n_yrs = n_distinct(yr),
+            n_treeyrs = n_distinct(paste0(id, "_", yr)),
+            .groups = "drop") %>%
+  data.frame()
+ofpeak_sites <- ofpeak %>%
+  group_by(site, state, lat, lon, elev) %>%
+  summarize(n_trees = n_distinct(id),
+            n_yrs = n_distinct(yr),
+            n_treeyrs = n_distinct(paste0(id, "_", yr)),
+            .groups = "drop") %>%
+  data.frame()
+
+ofmax_sites %>% filter(!site %in% ofpeak_sites$site)
+# Only 4 pretty-centralized sites that were in max count dataset but not peak
+# date dataset, so will just use ofmax_sites
+
+sites <- vect(ofmax_sites, geom = c("lon", "lat"), "epsg:4326")
+
+text_size <- 8
+map <- ggplot() +
+  geom_spatvector(data = states, fill = "gray95") +
+  geom_spatvector(data = sites, 
+                  aes(size = n_treeyrs, color = elev),
+                  alpha = 0.8) +
+  scale_color_viridis_c(option = "mako") +
+  scale_size_continuous(range = c(0.5, 4)) +
+  scale_x_continuous(breaks = c(-90, -80, -70),
+                     limits = c(-98, -69),
+                     labels = c("-90°", "-80°", "-70°")) +
+  scale_y_continuous(breaks = c(32, 36, 40, 44),
+                     limits = c(29.0, 45.0),
+                     labels = c("32°", "36°", "40°", "44°")) +
+  labs(size = "No. tree-years", 
+       color = "Elev (m)") +
+  theme_bw() +
+  theme(legend.text = element_text(size = text_size),
+        legend.title = element_text(size = text_size),
+        axis.text = element_text(size = text_size))
+map
+
+# ggsave("output/manuscript/redbud-map.png",
+#        map,
+#        width = 6.5,
+#        height = 5, 
+#        units = "in",
+#        dpi = 600)
+

@@ -1,6 +1,6 @@
 # Number of open flowers, eastern redbud
 # ER Zylstra
-# 12 November 2025
+# 30 March 2026
 
 library(rnpn)
 library(dplyr)
@@ -10,12 +10,16 @@ library(tidyr)
 library(lme4)
 library(ggplot2)
 library(terra)
-
-# library(sf)
+library(tidyterra)
 
 # Load shapefile with US state boundaries -------------------------------------#
 
 states <- vect("states/cb_2017_us_state_500k.shp")
+
+# Reproject and subset
+states <- terra::project(states, "epsg:4326") 
+states48 <- state.abb[!state.abb %in% c("HI", "AK")]
+states <- terra::subset(states, states$STUSPS %in% states48)
 
 # Download data, basic formatting (if not done already) -----------------------#
 
@@ -122,36 +126,35 @@ df <- df %>%
   distinct(id, php, obsdate, .keep_all = TRUE) %>%
   data.frame()
 
-# Are there observations where the plant is out of phase but an intensity value
-# is reported? If so, change the status but add a column to note that the data
-# were amended.
+# Are there observations where the plant is reported out of phase but an 
+# intensity value was reported? (Yes, only once). Assume status was entered 
+# incorrectly and change to "yes". (This issue will be addressed in new app)
 df <- df %>%
-  mutate(amended_status = ifelse(status == 0 & !is.na(intensity_midpoint), 
-                                 1, 0)) %>%
   mutate(status = ifelse(status == 0 & !is.na(intensity_midpoint), 1, status))
 
-# Extract information about sites ---------------------------------------------#
-
-sites <- df %>%
-  group_by(site, lat, lon, elev, state) %>%
-  summarize(n_plants = n_distinct(id),
-            n_yrs = n_distinct(yr),
-            n_plantyrs = n_distinct(paste0(id, "_", yr)),
-            .groups = "keep") %>%
-  data.frame()
+# # Extract information about sites ---------------------------------------------#
+# 
+# sites <- df %>%
+#   group_by(site, lat, lon, elev, state) %>%
+#   summarize(n_plants = n_distinct(id),
+#             n_yrs = n_distinct(yr),
+#             n_plantyrs = n_distinct(paste0(id, "_", yr)),
+#             .groups = "keep") %>%
+#   data.frame()
 
 # Combine observations from both flower phenophases ---------------------------#
 
 # Simplify data
 flowers <- df %>%
   mutate(php = ifelse(php == "Open flowers", "open", "flowers")) %>%
-  select(-c(lat, lon, elev, state, common_name, amended_status)) %>%
+  select(-common_name) %>%
   rename(intensity = intensity_midpoint,
          observer = observedby_person_id)
 
 # Put observations of all phenophases by same observer on same day in one row
 flowers <- flowers %>%
-  pivot_wider(id_cols = c(observer, site, id, obsdate, doy, yr),
+  pivot_wider(id_cols = c(observer, site, lat, lon, elev, state, id, obsdate, 
+                          doy, yr),
               names_from = php,
               values_from = c(status, intensity)) %>%
   data.frame()
@@ -202,13 +205,13 @@ flowers %>% distinct(id, obsdate) %>% nrow() == nrow(flowers)
 
 # flowers %>%
 #   group_by(id, obsdate) %>%
-#   summarize(n_obs = n(), 
+#   summarize(n_obs = n(),
 #             n_status_open = sum(!is.na(status_open)),
 #             n_int_flowers = sum(!is.na(intensity_flowers)),
 #             n_int_open = sum(!is.na(intensity_open)),
 #             .groups = "keep") %>%
 #   data.frame() %>%
-#   filter(n_obs > 1) 
+#   filter(n_obs > 1)
 
 # In almost every case, (n = 21) one observation provided an intensity values
 # for flowers and the other provided an intensity value for open flowers.
@@ -218,7 +221,7 @@ max_na <- function(x) {
   ifelse(sum(is.na(x)) == length(x), NA, max(x, na.rm = TRUE))
 }
 flowers <- flowers %>%
-  group_by(site, id, obsdate, doy, yr) %>%
+  group_by(site, lat, lon, elev, state, id, obsdate, doy, yr) %>%
   summarize(status_flowers = max_na(status_flowers),
             status_open = max_na(status_open),
             intensity_flowers = max_na(intensity_flowers),
@@ -226,88 +229,7 @@ flowers <- flowers %>%
             .groups = "keep") %>%
   data.frame()
 
-# Plot intensity values -------------------------------------------------------#
-
-# How much data each year?
-flowers %>%
-  group_by(yr) %>%
-  summarize(n_plants = n_distinct(id),
-            n_sites = n_distinct(site),
-            n_obs = n(),
-            n_int_flowers = sum(!is.na(intensity_flowers)),
-            n_int_open = sum(!is.na(intensity_open)),
-            n_int_both = sum(!is.na(intensity_flowers) & 
-                               !is.na(intensity_open))) %>%
-  data.frame()
-# Way more data in 2022-2025 than previous years
-
-# Look at the weekly mean number of flowers and open flowers by year (calculated
-# open flowers coarsely by multiplying averages across individuals, not within 
-# individuals). Can see peak in open flowers does not always coincide with 
-# flowers.
-wkcounts <- flowers %>%
-  mutate(wk = as.numeric(week(obsdate))) %>%
-  group_by(yr, wk) %>%
-  summarize(flowers = mean(intensity_flowers, na.rm = TRUE),
-            open = mean(intensity_open, na.rm = TRUE),
-            .groups = "keep") %>%
-  mutate(nopen = ceiling(flowers * open / 100)) %>%
-  pivot_longer(cols = c(flowers, nopen),
-               names_to = "type",
-               values_to = "intensity") %>%
-  mutate(type = ifelse(type == "nopen", "Open flowers", "Flowers")) %>%
-  filter(wk %in% 9:25)
-wkcount_summary <- wkcounts %>%
-  group_by(yr, type) %>%
-  summarize(max_value = max(intensity),
-            max_wk = mean(wk[intensity == max_value]),
-            .groups = "keep") %>%
-  data.frame()
-
-wkcounts_plot <- ggplot(data = wkcounts, aes(x = wk, y = intensity)) +
-  geom_line(aes(color = type, linetype = type)) +
-  scale_color_manual(values = c("#66c2a5", "#fc8d62")) +
-  scale_linetype_manual(values = c("dashed", "solid")) +
-  geom_segment(data = wkcount_summary, 
-               aes(x = max_wk, xend = max_wk, y = 0, yend = max_value,
-                   linetype = type),
-               show.legend = FALSE,
-               color = "gray30") +
-  facet_wrap(~yr) +
-  labs(x = "Week", y = "Mean count") +
-  theme_bw() +
-  theme(legend.position = "inside",
-        legend.position.inside = c(0.85, 0.15),
-        legend.title = element_blank(),
-        panel.grid = element_blank())
-wkcounts_plot
-# ggsave("output/manuscript/redbud-weekly-mn-counts-3x4.png",
-#        wkcounts_plot,
-#        width = 6.5, height = 5, units = "in", dpi = 600)
-
-wkcounts_plot_tall <- ggplot(data = wkcounts, aes(x = wk, y = intensity)) +
-  geom_line(aes(color = type, linetype = type)) +
-  scale_color_manual(values = c("#66c2a5", "#fc8d62")) +
-  scale_linetype_manual(values = c("dashed", "solid")) +
-  geom_segment(data = wkcount_summary, 
-               aes(x = max_wk, xend = max_wk, y = 0, yend = max_value,
-                   linetype = type),
-               show.legend = FALSE,
-               color = "gray30") +
-  facet_wrap(~yr, ncol = 2) +
-  labs(x = "Week", y = "Mean count") +
-  theme_bw() +
-  theme(legend.position = "bottom",
-        legend.text = element_text(size = 9),
-        legend.margin = margin(c(0, 5, 0.5, 5)),
-        legend.title = element_blank(),
-        panel.grid = element_blank())
-wkcounts_plot_tall
-# ggsave("output/manuscript/redbud-weekly-mn-counts-5x2.png",
-#        wkcounts_plot_tall,
-#        width = 3.5, height = 9, units = "in", dpi = 600)
-
-# Calculate estimated number of open flowers (by individual) ------------------#
+# Calculate estimated number of open flowers (by individual and day) ----------#
 
 # Remove observations where either intensity value is NA, then multiply
 # (rounding values up to nearest integer)
@@ -316,9 +238,74 @@ flowers <- flowers %>%
   mutate(nopen = ceiling(intensity_flowers * intensity_open / 100))
 
 # Remove observations past DOY 180
+# hist(flowers$doy[flowers$nopen > 0], breaks = 50)
 flowers <- filter(flowers, doy <= 180)
 
-# Create rules for filtering plant-years. 
+# Visualize no. flowers/open flowers by week each year ------------------------#
+
+# How much data do we have each year?
+flowers %>%
+  group_by(yr) %>%
+  summarize(nsites = n_distinct(site),
+            nsites_restricted = n_distinct(site[lat >= 37 & lat <= 42]))
+
+# Restricting by latitude to minimize geographic variation
+# Restricting to recent years when there was a lot more data
+
+wkcounts <- flowers %>%
+  filter(lat >= 37 & lat <= 42) %>%
+  filter(yr %in% 2022:2025) %>%
+  mutate(wk = as.numeric(week(obsdate))) %>%
+  group_by(yr, wk) %>%
+  summarize(flowers = mean(intensity_flowers),
+            flowers_md = median(intensity_flowers),
+            open = mean(nopen),
+            open_md = median(nopen),
+            .groups = "drop") %>%
+  pivot_longer(cols = flowers:open_md,
+               names_to = "type4",
+               values_to = "intensity") %>%
+  mutate(type = ifelse(type4 %in% c("open", "open_md"), 
+                       "Open flowers", "Flowers")) %>%
+  mutate(stat = ifelse(grepl("_md", type4), "median", "mean")) %>%
+  filter(wk %in% 9:25)
+
+wkcount_summary <- wkcounts %>%
+  filter(stat == "mean") %>%
+  group_by(yr, type) %>%
+  summarize(max_value = max(intensity),
+            max_wk = mean(wk[intensity == max_value]),
+            .groups = "drop") %>%
+  data.frame()
+
+wkcounts_plot <- ggplot(data = filter(wkcounts, stat == "mean"),
+                        aes(x = wk, y = intensity)) +
+  geom_line(aes(color = type, linetype = type)) +
+  scale_color_manual(values = c("#66c2a5", "#fc8d62")) +
+  scale_linetype_manual(values = c("dashed", "solid")) +
+  geom_segment(data = wkcount_summary,
+               aes(x = max_wk, xend = max_wk, y = 0, yend = max_value,
+                   linetype = type),
+               show.legend = FALSE,
+               color = "gray30") +
+  facet_wrap(~yr) +
+  labs(x = "Week", y = "Mean count") +
+  theme_bw() +
+  theme(legend.position = "inside",
+        legend.position.inside = c(0.15, 0.92),
+        legend.title = element_blank(),
+        panel.grid = element_blank())
+# wkcounts_plot
+
+# ggsave("output/manuscript/redbud-weekly-mn-counts.png",
+#        wkcounts_plot,
+#        width = 6.5, height = 5, units = "in", dpi = 600)
+
+# Filtering data for "peak" flowering models ----------------------------------#
+
+# Create rules for filtering plant-years so we don't include those where the max
+# count is unlikely to reflect the true maximum value that year.
+
 # Exclude plant-years that don't meet these criteria:
   # >=2 non-zero counts
   # At least one observation before DOY 100
@@ -356,10 +343,6 @@ of <- flowers %>%
   left_join(select(of_plantyrs, id, yr, remove), by = c("id", "yr")) %>%
   filter(remove == 0) %>%
   select(-remove)
-
-# Merge with site information
-of <- of %>%
-  left_join(select(sites, site, state, lat, lon, elev), by = "site")
 
 # Create dataframe with basic info for each site included in open flower dataset
 ofsites <- of %>%
@@ -441,7 +424,7 @@ winter_ppt <- ppt_month %>%
   summarize(winter_ppt = sum(ppt),
             winter_ppt30 = sum(ppt30),
             .groups = "keep") %>%
-  mutate(winter_ppt_perc = (winter_ppt - winter_ppt30)/winter_ppt30 * 100) %>%
+  mutate(winter_ppt_perc = (winter_ppt/winter_ppt30) * 100) %>%
   data.frame()
   
 # Summarize winter minimum temperatures (DJF) and calculate anomalies
@@ -536,7 +519,7 @@ ofmax %>%
   round(2)
 # Nothing worrying here. Highest correlation is 0.55 between winter minimum
 # temperatures and AGDD (which isn't too surprising since they both include
-# temperature based metrics in Jan-Feb)
+# temperature-based metrics in Jan-Feb)
 
 # Model annual/spatial variation in max counts --------------------------------# 
 
@@ -562,23 +545,26 @@ m_full <- lmer(maxcount_log ~ lat_z + lon_z + elev_z +
                  winter_ppt_z + winter_tmin_z + agdd_z + (1|fyr) + (1|site),
                data = ofmax, REML = FALSE)
 summary(m_full)
+confint(m_full, level = 0.80) 
+# At this level, AGDD, elev, and longitude include 0
 
-# Remove variables that have no explanatory power (|t| < 1; AGDD and elev):
-m_winter <- lmer(maxcount_log ~ lat_z + lon_z +
+# Remove variables that have little to no explanatory power:
+m_winter <- lmer(maxcount_log ~ lat_z +
                    winter_ppt_z + winter_tmin_z + (1|fyr) + (1|site),
                  data = ofmax, REML = FALSE)
 summary(m_winter)
-anova(m_full, m_winter) # Reduced model is good (and has lower AIC)
+AIC(m_full, m_winter) # AIC of simpler model about 4 points lower
 
-# Keeping everything else in, even if not signficant at a 0.05 level. Refit with
-# REML = TRUE
-m_winter <- lmer(maxcount_log ~ lat_z + lon_z +
+# Keeping everything else in (even if not signficant at a 0.05 level). 
+# Refit with REML = TRUE
+m_winter <- lmer(maxcount_log ~ lat_z +
                    winter_ppt_z + winter_tmin_z + (1|fyr) + (1|site),
                  data = ofmax, REML = TRUE)
 summary(m_winter)
-confint(m_winter)
+confint(m_winter, level = 0.80)
+confint(m_winter, level = 0.95)
 
-# More blooms on trees at higher latitudes, slighter more on trees further west
+# More blooms on trees at higher latitudes
 # More blooms following wetter winters (Dec-Feb) and slightly more after colder
 # winters.
 
@@ -592,10 +578,15 @@ max_random <- as.data.frame(VarCorr(m_winter)) %>%
   rename(parameter = grp,
          Estimate = sdcor) %>%
   mutate(parameter_type = "random-SDs", .before = parameter)
-max_ci <- as.data.frame(confint(m_winter)) %>%
+max_ci95 <- as.data.frame(confint(m_winter)) %>%
   rename(lower = "2.5 %",
          upper = "97.5 %")
-max_model_ests <- rbind(max_random, max_fixed) %>% cbind(max_ci)
+max_ci80 <- as.data.frame(confint(m_winter, level = 0.80)) %>%
+  rename(lower = "10 %",
+         upper = "90 %")
+max_model_ests <- rbind(max_random, max_fixed) %>% 
+  cbind(max_ci95) %>%
+  cbind(max_ci80)
 write.csv(max_model_ests,
           file = "output/manuscript/max-model-estimates.csv",
           row.names = FALSE)
@@ -717,19 +708,21 @@ mpeak_full <- lmer(peak ~ lat_z + lon_z + elev_z +
                      winter_ppt_z + winter_tmin_z + agdd_z + (1|fyr) + (1|site),
                    data = ofpeak, REML = FALSE)
 summary(mpeak_full)
+confint(mpeak_full, level = 0.80)
 
 # Remove variables that have no explanatory power (|t| < 1; lon, winter vars):
 mpeak_agdd <- lmer(peak ~ lat_z + elev_z + agdd_z + (1|fyr) + (1|site),
                    data = ofpeak, REML = FALSE)
 summary(mpeak_agdd)
-anova(mpeak_full, mpeak_agdd) # Reduced model is good (and has lower AIC)
+AIC(mpeak_full, mpeak_agdd)
 
-# Keeping everything else in, even if not signficant at a 0.05 level. Refit with
-# REML = TRUE
+# Keeping everything else in (even if not signficant at a 0.05 level). 
+# Refit with REML = TRUE
 mpeak_agdd <- lmer(peak ~ lat_z + elev_z + agdd_z + (1|fyr) + (1|site),
                    data = ofpeak, REML = TRUE)
 summary(mpeak_agdd)
-confint(mpeak_agdd)
+confint(mpeak_agdd, level = 0.95)
+confint(mpeak_agdd, level = 0.80)
 
 # Later peak at higher latitudes and elevations. Earlier peak if Jan-Mar is 
 # warmer than normal (2.6 days earlier for each 1-SD increase [80 degC] in AGDD)
@@ -744,10 +737,15 @@ peak_random <- as.data.frame(VarCorr(mpeak_agdd)) %>%
   rename(parameter = grp,
          Estimate = sdcor) %>%
   mutate(parameter_type = "random-SDs", .before = parameter)
-peak_ci <- as.data.frame(confint(mpeak_agdd)) %>%
+peak_ci95 <- as.data.frame(confint(mpeak_agdd)) %>%
   rename(lower = "2.5 %",
          upper = "97.5 %")
-peak_model_ests <- rbind(peak_random, peak_fixed) %>% cbind(peak_ci)
+peak_ci80 <- as.data.frame(confint(mpeak_agdd, level = 0.80)) %>%
+  rename(lower = "10 %",
+         upper = "90 %")
+peak_model_ests <- rbind(peak_random, peak_fixed) %>% 
+  cbind(peak_ci95) %>%
+  cbind(peak_ci80)
 write.csv(peak_model_ests,
           file = "output/manuscript/peak-model-estimates.csv",
           row.names = FALSE)

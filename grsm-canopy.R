@@ -365,6 +365,14 @@ dff_no20 <- dff_no20 %>%
          spp = factor(common_name),
          id = factor(id))
 
+# Few summary stats
+# Total number of trees
+length(unique(dff_no20$id))
+dff_no20 %>%
+  group_by(yr) %>%
+  summarize(n_trees = n_distinct(id)) %>%
+  data.frame()
+
 # Model canopy development as a function of date ------------------------------#
 
 # Year as a random effect (excluding 2020 data)

@@ -120,6 +120,10 @@ df <- df %>%
 # Now the only NAs left in the intensity_midpoint column occur when the status 
 # is yes but no intensity value was provided 
 
+# Number of plants, sites monitored in GRSM since 2016:
+length(unique(df$id)) # 321
+length(unique(df$site)) # 30
+
 # Filter data -----------------------------------------------------------------#
 
 # Will focus on canopy closure in spring, so limiting observations to 
